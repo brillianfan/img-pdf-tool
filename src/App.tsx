@@ -11,9 +11,17 @@ import {
   AlertCircle,
   Loader2,
   Download,
-  Settings2
+  Settings2,
+  FileArchive
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import JSZip from 'jszip';
+
+// Set up PDF.js worker using Vite's URL import
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 type ToolAction = 'TO_PDF' | 'PDF_TO_IMG' | 'WEBP' | 'AVIF' | 'JPEG' | 'PNG';
 
@@ -37,7 +45,7 @@ const TOOLS: Tool[] = [
     id: 'PDF_TO_IMG', 
     title: 'PDF sang Ảnh (JPG)', 
     icon: <FileImage className="w-8 h-8 text-orange-500" />, 
-    description: 'Tách các trang PDF thành file ảnh chất lượng cao',
+    description: 'Tách các trang PDF thành các file ảnh (tải về file ZIP)',
     accept: '.pdf'
   },
   { 
@@ -84,10 +92,45 @@ export default function App() {
 
     try {
       if (action === 'PDF_TO_IMG') {
-        // PDF to Image is handled client-side for better performance/privacy
-        // We'll use pdfjs-dist for this. Since it's a bit heavy, we'll alert for now
-        // or implement a basic version.
-        setStatus({ message: 'Tính năng PDF sang Ảnh đang được hoàn thiện...', type: 'info' });
+        const file = files[0];
+        if (!file.type.includes('pdf') && !file.name.toLowerCase().endsWith('.pdf')) {
+          setStatus({ message: '❌ Vui lòng chọn file PDF!', type: 'error' });
+          return;
+        }
+
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const numPages = pdf.numPages;
+        const zip = new JSZip();
+        
+        setStatus({ message: `Đang xử lý ${numPages} trang...`, type: 'loading' });
+
+        for (let i = 1; i <= numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 2.0 }); // High quality scale
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          
+          if (!context) continue;
+          
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          await page.render({
+            canvasContext: context,
+            viewport: viewport
+          } as any).promise;
+
+          const imgData = canvas.toDataURL('image/jpeg', quality / 100);
+          const base64Data = imgData.replace(/^data:image\/jpeg;base64,/, "");
+          zip.file(`page_${i}.jpg`, base64Data, { base64: true });
+          
+          setStatus({ message: `Đang xử lý: ${i}/${numPages} trang...`, type: 'loading' });
+        }
+
+        const content = await zip.generateAsync({ type: 'blob' });
+        downloadBlob(content, `${file.name.replace('.pdf', '')}_images.zip`);
+        setStatus({ message: `✅ Đã tách ${numPages} trang từ PDF thành công!`, type: 'success' });
         return;
       }
 
