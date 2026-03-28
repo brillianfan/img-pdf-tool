@@ -54,19 +54,17 @@ async function startServer() {
       const files = req.files as Express.Multer.File[];
       if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
 
+      const quality = parseInt(req.body.quality as string) || 85;
       const pdfDoc = await PDFDocument.create();
       
       for (const file of files) {
         let image;
-        if (file.mimetype === "image/jpeg" || file.mimetype === "image/jpg") {
-          image = await pdfDoc.embedJpg(file.buffer);
-        } else if (file.mimetype === "image/png") {
-          image = await pdfDoc.embedPng(file.buffer);
-        } else {
-          // Convert other formats to PNG first using sharp
-          const pngBuffer = await sharp(file.buffer).png().toBuffer();
-          image = await pdfDoc.embedPng(pngBuffer);
-        }
+        // Always process with sharp to apply quality/compression
+        const processedBuffer = await sharp(file.buffer)
+          .jpeg({ quality })
+          .toBuffer();
+        
+        image = await pdfDoc.embedJpg(processedBuffer);
 
         const page = pdfDoc.addPage([image.width, image.height]);
         page.drawImage(image, {
@@ -83,6 +81,123 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "PDF creation failed" });
+    }
+  });
+
+  // API: Compress PDF
+  app.post("/api/pdf/compress", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      
+      const pdfDoc = await PDFDocument.load(req.file.buffer);
+      
+      // Basic compression by re-saving with object streams
+      // For real compression we'd need to downscale images, which is complex
+      const pdfBytes = await pdfDoc.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+      });
+
+      res.set("Content-Type", "application/pdf");
+      res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "PDF compression failed" });
+    }
+  });
+
+  // API: Merge PDFs
+  app.post("/api/pdf/merge", upload.array("files"), async (req, res) => {
+    try {
+      const files = req.files as Express.Multer.File[];
+      if (!files || files.length < 2) return res.status(400).json({ error: "At least 2 files required" });
+
+      const mergedPdf = await PDFDocument.create();
+      for (const file of files) {
+        const pdf = await PDFDocument.load(file.buffer);
+        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+        copiedPages.forEach((page) => mergedPdf.addPage(page));
+      }
+
+      const pdfBytes = await mergedPdf.save();
+      res.set("Content-Type", "application/pdf");
+      res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "PDF merging failed" });
+    }
+  });
+
+  // API: Split PDF (returns a zip of individual pages)
+  app.post("/api/pdf/split", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      
+      const pdf = await PDFDocument.load(req.file.buffer);
+      const pageCount = pdf.getPageCount();
+      
+      const archiver = (await import("archiver")).default;
+      const archive = archiver("zip");
+      
+      res.set("Content-Type", "application/zip");
+      res.set("Content-Disposition", `attachment; filename="split_pdf.zip"`);
+      archive.pipe(res);
+
+      for (let i = 0; i < pageCount; i++) {
+        const newPdf = await PDFDocument.create();
+        const [page] = await newPdf.copyPages(pdf, [i]);
+        newPdf.addPage(page);
+        const pdfBytes = await newPdf.save();
+        archive.append(Buffer.from(pdfBytes), { name: `page_${i + 1}.pdf` });
+      }
+
+      await archive.finalize();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "PDF splitting failed" });
+    }
+  });
+
+  // API: Delete Pages
+  app.post("/api/pdf/delete-pages", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const pagesToDelete = JSON.parse(req.body.pages); // Array of 0-indexed page numbers
+      
+      const pdf = await PDFDocument.load(req.file.buffer);
+      const newPdf = await PDFDocument.create();
+      
+      const pageIndices = pdf.getPageIndices().filter(i => !pagesToDelete.includes(i));
+      const copiedPages = await newPdf.copyPages(pdf, pageIndices);
+      copiedPages.forEach(page => newPdf.addPage(page));
+
+      const pdfBytes = await newPdf.save();
+      res.set("Content-Type", "application/pdf");
+      res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Page deletion failed" });
+    }
+  });
+
+  // API: Extract Pages
+  app.post("/api/pdf/extract-pages", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const pagesToExtract = JSON.parse(req.body.pages); // Array of 0-indexed page numbers
+      
+      const pdf = await PDFDocument.load(req.file.buffer);
+      const newPdf = await PDFDocument.create();
+      
+      const copiedPages = await newPdf.copyPages(pdf, pagesToExtract);
+      copiedPages.forEach(page => newPdf.addPage(page));
+
+      const pdfBytes = await newPdf.save();
+      res.set("Content-Type", "application/pdf");
+      res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Page extraction failed" });
     }
   });
 
