@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   FileImage, 
   FileText, 
@@ -19,17 +19,18 @@ import {
   RefreshCw,
   Image as ImageIcon,
   X,
-  Info
+  Info,
+  ArrowUp,
+  ArrowDown,
+  GripVertical
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
 import JSZip from 'jszip';
+import heic2any from 'heic2any';
 
-// @ts-ignore
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-
-// Set up PDF.js worker using Vite's URL import
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+// Set up PDF.js worker using unpkg for better reliability with .mjs files
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 type ToolAction = 
   | 'IMG_TO_PDF' 
@@ -56,7 +57,7 @@ const TOOLS: Tool[] = [
     title: 'Nén và chuyển sang PDF', 
     icon: <FileText className="w-10 h-10 text-slate-700" />, 
     description: 'Chuyển đổi và nén ảnh sang định dạng PDF',
-    accept: 'image/*',
+    accept: 'image/*,.heic,.heif,.jfif',
     multiple: true
   },
   { 
@@ -85,7 +86,7 @@ const TOOLS: Tool[] = [
     title: 'Chuyển sang Ảnh (JPG/PNG)', 
     icon: <ImageIcon className="w-10 h-10 text-slate-700" />, 
     description: 'Chuyển đổi qua lại giữa JPG và PNG',
-    accept: 'image/*'
+    accept: 'image/*,.heic,.heif,.jfif'
   },
   { 
     id: 'MERGE_PDF', 
@@ -121,26 +122,70 @@ export default function App() {
   const [showSupport, setShowSupport] = useState(false);
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
+  const [toolInput, setToolInput] = useState<{
+    action: ToolAction;
+    files: FileList | File[];
+    value: string;
+    type: 'text' | 'select' | 'reorder';
+    options?: { label: string; value: string }[];
+  } | null>(null);
 
-  const handleProcess = async (files: FileList | File[], action: ToolAction) => {
+  const convertHeicToJpg = async (file: File): Promise<File> => {
+    if (file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif')) {
+      setStatus({ message: `Đang chuyển đổi HEIC: ${file.name}...`, type: 'loading' });
+      const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.8 });
+      const resultBlob = Array.isArray(blob) ? blob[0] : blob;
+      return new File([resultBlob], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
+    }
+    return file;
+  };
+
+  const checkResponse = async (response: Response, defaultError: string) => {
+    if (!response.ok) {
+      let errorMessage = defaultError;
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || defaultError;
+      } catch (e) {
+        // Not JSON
+      }
+      throw new Error(errorMessage);
+    }
+    return response;
+  };
+
+  const resetSettings = () => {
+    setQuality(85);
+    setDpi(300);
+    setStatus({ message: 'Đã khôi phục cài đặt gốc!', type: 'success' });
+    setTimeout(() => setStatus(null), 2000);
+  };
+
+  const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValue?: string) => {
     if (files.length === 0) return;
 
-    setStatus({ message: 'Đang xử lý...', type: 'loading' });
+    setStatus({ message: 'Đang chuẩn bị...', type: 'loading' });
 
     try {
       const formData = new FormData();
       
+      // Pre-process HEIC files
+      const processedFiles = await Promise.all(Array.from(files).map(f => convertHeicToJpg(f)));
+      
+      setStatus({ message: 'Đang xử lý...', type: 'loading' });
+
       switch (action) {
         case 'PDF_TO_IMG': {
-          const file = files[0];
+          const file = processedFiles[0];
           const arrayBuffer = await file.arrayBuffer();
-          const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+          const pdf = await loadingTask.promise;
           const numPages = pdf.numPages;
           const zip = new JSZip();
           
           for (let i = 1; i <= numPages; i++) {
             const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: dpi / 72 }); // Scale based on DPI (72 is standard)
+            const viewport = page.getViewport({ scale: dpi / 72 }); 
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
             if (!context) continue;
@@ -158,77 +203,167 @@ export default function App() {
         }
 
         case 'IMG_TO_PDF': {
-          Array.from(files).forEach(file => formData.append('files', file));
+          processedFiles.forEach(file => formData.append('files', file));
           formData.append('quality', quality.toString());
           const response = await fetch('/api/to-pdf', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi server');
+          await checkResponse(response, 'Lỗi tạo PDF');
           downloadBlob(await response.blob(), 'converted.pdf');
           setStatus({ message: '✅ Đã tạo PDF thành công!', type: 'success' });
           break;
         }
 
         case 'MERGE_PDF': {
-          Array.from(files).forEach(file => formData.append('files', file));
+          if (!toolInput && processedFiles.length > 1) {
+            setToolInput({
+              action,
+              files: processedFiles,
+              value: '',
+              type: 'reorder'
+            });
+            setStatus(null);
+            return;
+          }
+          
+          const filesToMerge = Array.from(processedFiles);
+          filesToMerge.forEach(file => formData.append('files', file));
           const response = await fetch('/api/pdf/merge', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi gộp PDF');
+          await checkResponse(response, 'Lỗi gộp PDF');
           downloadBlob(await response.blob(), 'merged.pdf');
           setStatus({ message: '✅ Đã gộp PDF thành công!', type: 'success' });
+          setToolInput(null);
           break;
         }
 
         case 'SPLIT_PDF': {
-          formData.append('file', files[0]);
+          formData.append('file', processedFiles[0]);
           const response = await fetch('/api/pdf/split', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi tách PDF');
+          await checkResponse(response, 'Lỗi tách PDF');
           downloadBlob(await response.blob(), 'split_pages.zip');
           setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
           break;
         }
 
         case 'DELETE_PAGES': {
-          const pages = prompt('Nhập số trang cần xóa (ví dụ: 1,3,5):');
-          if (!pages) { setStatus(null); return; }
-          const pageIndices = pages.split(',').map(p => parseInt(p.trim()) - 1).filter(p => !isNaN(p));
-          formData.append('file', files[0]);
+          if (!toolInput && !overrideValue) {
+            setToolInput({
+              action,
+              files: processedFiles,
+              value: '',
+              type: 'text'
+            });
+            setStatus(null);
+            return;
+          }
+          const pagesInput = overrideValue || toolInput?.value || '';
+          const pageIndices = parsePageInput(pagesInput);
+          if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
+          
+          formData.append('file', processedFiles[0]);
           formData.append('pages', JSON.stringify(pageIndices));
           const response = await fetch('/api/pdf/delete-pages', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi xóa trang');
+          await checkResponse(response, 'Lỗi xóa trang');
           downloadBlob(await response.blob(), 'modified.pdf');
           setStatus({ message: '✅ Đã xóa trang thành công!', type: 'success' });
+          setToolInput(null);
           break;
         }
 
         case 'EXTRACT_PAGES': {
-          const pages = prompt('Nhập số trang cần lấy (ví dụ: 1,2,4):');
-          if (!pages) { setStatus(null); return; }
-          const pageIndices = pages.split(',').map(p => parseInt(p.trim()) - 1).filter(p => !isNaN(p));
-          formData.append('file', files[0]);
+          if (!toolInput && !overrideValue) {
+            setToolInput({
+              action,
+              files: processedFiles,
+              value: '',
+              type: 'text'
+            });
+            setStatus(null);
+            return;
+          }
+          const pagesInput = overrideValue || toolInput?.value || '';
+          const pageIndices = parsePageInput(pagesInput);
+          if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
+
+          formData.append('file', processedFiles[0]);
           formData.append('pages', JSON.stringify(pageIndices));
           const response = await fetch('/api/pdf/extract-pages', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi trích xuất trang');
+          await checkResponse(response, 'Lỗi trích xuất trang');
           downloadBlob(await response.blob(), 'extracted.pdf');
           setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
+          setToolInput(null);
           break;
         }
 
         case 'CONVERT_IMAGE': {
-          const format = prompt('Chuyển sang định dạng nào? (jpg hoặc png):', 'jpg');
-          if (!format || !['jpg', 'png'].includes(format.toLowerCase())) { setStatus(null); return; }
-          formData.append('file', files[0]);
-          formData.append('format', format.toLowerCase());
-          formData.append('quality', quality.toString());
-          const response = await fetch('/api/convert', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi chuyển đổi ảnh');
-          downloadBlob(await response.blob(), `converted.${format}`);
+          if (!toolInput && !overrideValue) {
+            setToolInput({
+              action,
+              files: processedFiles,
+              value: 'jpg',
+              type: 'select',
+              options: [
+                { label: 'Sang JPG', value: 'jpg' },
+                { label: 'Sang PNG', value: 'png' }
+              ]
+            });
+            setStatus(null);
+            return;
+          }
+          const format = overrideValue || toolInput?.value || 'jpg';
+          const targetFormat = format.toLowerCase() === 'jpg' ? 'jpeg' : 'png';
+          
+          if (processedFiles.length > 1) {
+            processedFiles.forEach(file => formData.append('files', file));
+            formData.append('format', targetFormat);
+            formData.append('quality', quality.toString());
+            const response = await fetch('/api/convert-multiple', { method: 'POST', body: formData });
+            await checkResponse(response, 'Lỗi chuyển đổi hàng loạt');
+            downloadBlob(await response.blob(), 'converted_images.zip');
+          } else {
+            formData.append('file', processedFiles[0]);
+            formData.append('format', targetFormat);
+            formData.append('quality', quality.toString());
+            const response = await fetch('/api/convert', { method: 'POST', body: formData });
+            await checkResponse(response, 'Lỗi chuyển đổi ảnh');
+            downloadBlob(await response.blob(), `converted.${format.toLowerCase()}`);
+          }
+          
           setStatus({ message: '✅ Đã chuyển đổi ảnh thành công!', type: 'success' });
+          setToolInput(null);
           break;
         }
 
         case 'COMPRESS_PDF': {
-          formData.append('file', files[0]);
-          const response = await fetch('/api/pdf/compress', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error('Lỗi nén PDF');
-          downloadBlob(await response.blob(), 'compressed.pdf');
+          const file = processedFiles[0];
+          setStatus({ message: '🔄 Đang nén PDF (Phương pháp Rasterize Pro)...', type: 'loading' });
+          
+          const arrayBuffer = await file.arrayBuffer();
+          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+          const pdf = await loadingTask.promise;
+          const numPages = pdf.numPages;
+          
+          const imageFormData = new FormData();
+          imageFormData.append('quality', quality.toString());
+          
+          for (let i = 1; i <= numPages; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: dpi / 72 }); 
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (!context) continue;
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+            
+            const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
+            if (blob) {
+              imageFormData.append('files', blob, `page_${i}.jpg`);
+            }
+            setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
+          }
+          
+          const response = await fetch('/api/to-pdf', { method: 'POST', body: imageFormData });
+          await checkResponse(response, 'Lỗi nén PDF');
+          downloadBlob(await response.blob(), `${file.name.replace('.pdf', '')}_compressed.pdf`);
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
           break;
         }
@@ -236,10 +371,30 @@ export default function App() {
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setStatus({ message: '❌ Có lỗi xảy ra.', type: 'error' });
+      setStatus({ message: `❌ ${error.message || 'Có lỗi xảy ra.'}`, type: 'error' });
     }
+  };
+
+  const parsePageInput = (input: string) => {
+    const pages: number[] = [];
+    const parts = input.split(',');
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (trimmed.includes('-')) {
+        const [start, end] = trimmed.split('-').map(p => parseInt(p.trim()));
+        if (!isNaN(start) && !isNaN(end)) {
+          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+            pages.push(i - 1);
+          }
+        }
+      } else {
+        const p = parseInt(trimmed);
+        if (!isNaN(p)) pages.push(p - 1);
+      }
+    }
+    return [...new Set(pages)].sort((a, b) => a - b);
   };
 
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -262,6 +417,7 @@ export default function App() {
   const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && activeTool) {
       handleProcess(e.target.files, activeTool);
+      e.target.value = ''; // Reset to allow selecting the same file again
     }
   };
 
@@ -395,7 +551,7 @@ export default function App() {
         </div>
 
         <button 
-          onClick={() => window.location.reload()}
+          onClick={resetSettings}
           className="flex items-center gap-2 text-slate-400 hover:text-blue-600 transition-colors text-xs font-medium uppercase tracking-widest"
         >
           <RefreshCw className="w-3 h-3" />
@@ -463,6 +619,135 @@ export default function App() {
           </AnimatePresence>
         </div>
       </main>
+
+      {/* Tool Input Modal */}
+      <AnimatePresence>
+        {toolInput && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setToolInput(null)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className={`relative bg-white rounded-3xl shadow-2xl p-8 w-full ${toolInput.type === 'reorder' ? 'max-w-2xl' : 'max-w-md'}`}
+            >
+              <h2 className="text-xl font-bold text-slate-800 mb-4">
+                {TOOLS.find(t => t.id === toolInput.action)?.title}
+              </h2>
+              
+              <div className="space-y-4">
+                {toolInput.type === 'text' ? (
+                  <div>
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">
+                      Nhập số trang (ví dụ: 1, 2-4, 6)
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={toolInput.value}
+                      onChange={(e) => setToolInput({ ...toolInput, value: e.target.value })}
+                      onKeyDown={(e) => e.key === 'Enter' && handleProcess(toolInput.files, toolInput.action)}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      placeholder="1, 2, 3..."
+                    />
+                  </div>
+                ) : toolInput.type === 'reorder' ? (
+                  <div className="space-y-2 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                    {(Array.from(toolInput.files) as File[]).map((file, idx) => (
+                      <div 
+                        key={`${file.name}-${idx}`}
+                        className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl group"
+                      >
+                        <GripVertical className="w-4 h-4 text-slate-300" />
+                        <span className="flex-1 text-sm font-medium text-slate-700 truncate">{file.name}</span>
+                        <div className="flex gap-1">
+                          <button 
+                            disabled={idx === 0}
+                            onClick={() => {
+                              const newFiles = [...(Array.from(toolInput.files) as File[])];
+                              [newFiles[idx], newFiles[idx-1]] = [newFiles[idx-1], newFiles[idx]];
+                              setToolInput({ ...toolInput, files: newFiles });
+                            }}
+                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 transition-all"
+                          >
+                            <ArrowUp className="w-4 h-4" />
+                          </button>
+                          <button 
+                            disabled={idx === toolInput.files.length - 1}
+                            onClick={() => {
+                              const newFiles = [...(Array.from(toolInput.files) as File[])];
+                              [newFiles[idx], newFiles[idx+1]] = [newFiles[idx+1], newFiles[idx]];
+                              setToolInput({ ...toolInput, files: newFiles });
+                            }}
+                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 transition-all"
+                          >
+                            <ArrowDown className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const newFiles = (Array.from(toolInput.files) as File[]).filter((_, i) => i !== idx);
+                              if (newFiles.length < 2) {
+                                setToolInput(null);
+                                setStatus({ message: 'Cần ít nhất 2 file để gộp!', type: 'error' });
+                              } else {
+                                setToolInput({ ...toolInput, files: newFiles });
+                              }
+                            }}
+                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-rose-600 transition-all"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {toolInput.options?.map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => {
+                          handleProcess(toolInput.files, toolInput.action, opt.value);
+                        }}
+                        className={`py-4 rounded-xl font-bold transition-all border ${
+                          toolInput.value === opt.value 
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-200' 
+                            : 'bg-slate-50 text-slate-600 border-slate-100 hover:bg-slate-100'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    onClick={() => setToolInput(null)}
+                    className="flex-1 px-6 py-3 border border-slate-100 rounded-xl font-bold text-slate-500 hover:bg-slate-50 transition-colors"
+                  >
+                    Hủy
+                  </button>
+                  {(toolInput.type === 'text' || toolInput.type === 'reorder') && (
+                    <button
+                      onClick={() => handleProcess(toolInput.files, toolInput.action)}
+                      className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
+                    >
+                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : 'Tiếp tục'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Support Modal */}
       <AnimatePresence>

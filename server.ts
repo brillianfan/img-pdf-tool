@@ -7,14 +7,25 @@ import path from "path";
 import fs from "fs";
 import cors from "cors";
 
+import archiver from "archiver";
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(cors());
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
-  const upload = multer({ storage: multer.memoryStorage() });
+  const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  });
+
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", time: new Date().toISOString() });
+  });
 
   // API: Image Conversion & Compression
   app.post("/api/convert", upload.single("file"), async (req, res) => {
@@ -23,6 +34,8 @@ async function startServer() {
       
       const { format, quality } = req.body;
       const q = parseInt(quality) || 85;
+      
+      console.log(`Converting image to ${format} with quality ${q}`);
       
       let processor = sharp(req.file.buffer);
       
@@ -33,7 +46,6 @@ async function startServer() {
       } else if (format === "avif") {
         processor = processor.avif({ quality: q });
       } else if (format === "png") {
-        // PNG uses compression level 0-9
         const compressionLevel = Math.floor((100 - q) / 10);
         processor = processor.png({ compressionLevel: Math.max(0, Math.min(9, compressionLevel)) });
       }
@@ -42,9 +54,50 @@ async function startServer() {
       
       res.set("Content-Type", `image/${format === 'jpg' ? 'jpeg' : format}`);
       res.send(buffer);
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "Conversion failed" });
+    } catch (error: any) {
+      console.error("Conversion error:", error);
+      res.status(500).json({ error: error.message || "Conversion failed" });
+    }
+  });
+
+  // API: Multiple Image Conversion
+  app.post("/api/convert-multiple", upload.array("files"), async (req, res) => {
+    try {
+      const files = req.files as Express.Multer.File[];
+      if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+      
+      const { format, quality } = req.body;
+      const q = parseInt(quality) || 85;
+      const targetExt = format === 'jpeg' || format === 'jpg' ? 'jpg' : format;
+      
+      const archive = archiver("zip");
+      res.set("Content-Type", "application/zip");
+      res.set("Content-Disposition", `attachment; filename="converted_images.zip"`);
+      archive.pipe(res);
+
+      for (const file of files) {
+        let processor = sharp(file.buffer);
+        
+        if (format === "jpeg" || format === "jpg") {
+          processor = processor.jpeg({ quality: q, chromaSubsampling: '4:4:4' });
+        } else if (format === "webp") {
+          processor = processor.webp({ quality: q });
+        } else if (format === "png") {
+          const compressionLevel = Math.floor((100 - q) / 10);
+          processor = processor.png({ compressionLevel: Math.max(0, Math.min(9, compressionLevel)) });
+        }
+
+        const buffer = await processor.toBuffer();
+        const fileName = path.parse(file.originalname).name;
+        archive.append(buffer, { name: `${fileName}.${targetExt}` });
+      }
+
+      await archive.finalize();
+    } catch (error: any) {
+      console.error("Multiple conversion error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message || "Conversion failed" });
+      }
     }
   });
 
@@ -55,17 +108,17 @@ async function startServer() {
       if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
 
       const quality = parseInt(req.body.quality as string) || 85;
+      console.log(`Creating PDF from ${files.length} images with quality ${quality}`);
+      
       const pdfDoc = await PDFDocument.create();
       
       for (const file of files) {
-        let image;
-        // Always process with sharp to apply quality/compression
+        // Always process with sharp to ensure compatibility and apply quality
         const processedBuffer = await sharp(file.buffer)
           .jpeg({ quality })
           .toBuffer();
         
-        image = await pdfDoc.embedJpg(processedBuffer);
-
+        const image = await pdfDoc.embedJpg(processedBuffer);
         const page = pdfDoc.addPage([image.width, image.height]);
         page.drawImage(image, {
           x: 0,
@@ -78,31 +131,9 @@ async function startServer() {
       const pdfBytes = await pdfDoc.save();
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "PDF creation failed" });
-    }
-  });
-
-  // API: Compress PDF
-  app.post("/api/pdf/compress", upload.single("file"), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      
-      const pdfDoc = await PDFDocument.load(req.file.buffer);
-      
-      // Basic compression by re-saving with object streams
-      // For real compression we'd need to downscale images, which is complex
-      const pdfBytes = await pdfDoc.save({
-        useObjectStreams: true,
-        addDefaultPage: false,
-      });
-
-      res.set("Content-Type", "application/pdf");
-      res.send(Buffer.from(pdfBytes));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "PDF compression failed" });
+    } catch (error: any) {
+      console.error("PDF creation error:", error);
+      res.status(500).json({ error: error.message || "PDF creation failed" });
     }
   });
 
@@ -112,6 +143,7 @@ async function startServer() {
       const files = req.files as Express.Multer.File[];
       if (!files || files.length < 2) return res.status(400).json({ error: "At least 2 files required" });
 
+      console.log(`Merging ${files.length} PDFs`);
       const mergedPdf = await PDFDocument.create();
       for (const file of files) {
         const pdf = await PDFDocument.load(file.buffer);
@@ -122,21 +154,21 @@ async function startServer() {
       const pdfBytes = await mergedPdf.save();
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "PDF merging failed" });
+    } catch (error: any) {
+      console.error("PDF merge error:", error);
+      res.status(500).json({ error: error.message || "PDF merging failed" });
     }
   });
 
-  // API: Split PDF (returns a zip of individual pages)
+  // API: Split PDF
   app.post("/api/pdf/split", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       
+      console.log("Splitting PDF");
       const pdf = await PDFDocument.load(req.file.buffer);
       const pageCount = pdf.getPageCount();
       
-      const archiver = (await import("archiver")).default;
       const archive = archiver("zip");
       
       res.set("Content-Type", "application/zip");
@@ -152,9 +184,11 @@ async function startServer() {
       }
 
       await archive.finalize();
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "PDF splitting failed" });
+    } catch (error: any) {
+      console.error("PDF split error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message || "PDF splitting failed" });
+      }
     }
   });
 
@@ -162,21 +196,28 @@ async function startServer() {
   app.post("/api/pdf/delete-pages", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const pagesToDelete = JSON.parse(req.body.pages); // Array of 0-indexed page numbers
+      const pagesToDelete = JSON.parse(req.body.pages);
       
+      console.log(`Deleting pages: ${pagesToDelete.join(", ")}`);
       const pdf = await PDFDocument.load(req.file.buffer);
       const newPdf = await PDFDocument.create();
       
+      const totalPages = pdf.getPageCount();
       const pageIndices = pdf.getPageIndices().filter(i => !pagesToDelete.includes(i));
+      
+      if (pageIndices.length === 0) {
+        return res.status(400).json({ error: "Không thể xóa tất cả các trang" });
+      }
+
       const copiedPages = await newPdf.copyPages(pdf, pageIndices);
       copiedPages.forEach(page => newPdf.addPage(page));
 
       const pdfBytes = await newPdf.save();
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "Page deletion failed" });
+    } catch (error: any) {
+      console.error("PDF delete pages error:", error);
+      res.status(500).json({ error: error.message || "Page deletion failed" });
     }
   });
 
@@ -184,20 +225,57 @@ async function startServer() {
   app.post("/api/pdf/extract-pages", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const pagesToExtract = JSON.parse(req.body.pages); // Array of 0-indexed page numbers
+      const pagesToExtract = JSON.parse(req.body.pages);
       
+      console.log(`Extracting pages: ${pagesToExtract.join(", ")}`);
       const pdf = await PDFDocument.load(req.file.buffer);
       const newPdf = await PDFDocument.create();
       
-      const copiedPages = await newPdf.copyPages(pdf, pagesToExtract);
+      const totalPages = pdf.getPageCount();
+      const validPages = pagesToExtract.filter((p: number) => p >= 0 && p < totalPages);
+      
+      if (validPages.length === 0) {
+        return res.status(400).json({ error: "Số trang trích xuất không hợp lệ" });
+      }
+
+      const copiedPages = await newPdf.copyPages(pdf, validPages);
       copiedPages.forEach(page => newPdf.addPage(page));
 
       const pdfBytes = await newPdf.save();
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "Page extraction failed" });
+    } catch (error: any) {
+      console.error("PDF extract pages error:", error);
+      res.status(500).json({ error: error.message || "Page extraction failed" });
+    }
+  });
+
+  // API: Compress PDF (Rasterized or Optimized)
+  app.post("/api/pdf/compress", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      
+      const quality = parseInt(req.body.quality as string) || 85;
+      const isRasterized = req.body.rasterize === 'true';
+      
+      console.log(`Compressing PDF (Rasterize: ${isRasterized}) with quality hint: ${quality}`);
+      
+      const pdfDoc = await PDFDocument.load(req.file.buffer);
+      
+      // If rasterized, we expect the frontend to have sent images instead, 
+      // but if the user calls this directly, we just do object stream optimization.
+      // The "Pro" rasterization is handled by the frontend sending images to /api/to-pdf.
+      
+      const pdfBytes = await pdfDoc.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+      });
+
+      res.set("Content-Type", "application/pdf");
+      res.send(Buffer.from(pdfBytes));
+    } catch (error: any) {
+      console.error("PDF compression error:", error);
+      res.status(500).json({ error: error.message || "PDF compression failed" });
     }
   });
 
