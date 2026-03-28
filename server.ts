@@ -35,7 +35,7 @@ async function startServer() {
       const { format, quality } = req.body;
       const q = parseInt(quality) || 85;
       
-      console.log(`Converting image to ${format} with quality ${q}`);
+      console.log(`Converting single image: ${req.file.originalname} -> ${format} (quality: ${q})`);
       
       let processor = sharp(req.file.buffer);
       
@@ -69,6 +69,8 @@ async function startServer() {
       const { format, quality } = req.body;
       const q = parseInt(quality) || 85;
       const targetExt = format === 'jpeg' || format === 'jpg' ? 'jpg' : format;
+      
+      console.log(`Converting ${files.length} images to ${format} (quality: ${q})`);
       
       const archive = archiver("zip");
       res.set("Content-Type", "application/zip");
@@ -165,22 +167,47 @@ async function startServer() {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       
-      console.log("Splitting PDF");
-      const pdf = await PDFDocument.load(req.file.buffer);
+      console.log("Splitting PDF:", req.file.originalname);
+      
+      // Load PDF with ignoreEncryption to handle more files
+      let pdf;
+      try {
+        pdf = await PDFDocument.load(req.file.buffer, { ignoreEncryption: true });
+      } catch (e) {
+        return res.status(400).json({ error: "Không thể đọc tệp PDF. Tệp có thể bị hỏng hoặc có mật khẩu bảo vệ." });
+      }
+
       const pageCount = pdf.getPageCount();
+      if (pageCount === 0) {
+        return res.status(400).json({ error: "Tệp PDF không có trang nào." });
+      }
       
-      const archive = archiver("zip");
+      const archive = archiver("zip", { zlib: { level: 5 } });
       
+      // Handle archive errors
+      archive.on('error', (err) => {
+        console.error("Archive error:", err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Lỗi khi nén tệp ZIP" });
+        }
+      });
+
       res.set("Content-Type", "application/zip");
       res.set("Content-Disposition", `attachment; filename="split_pdf.zip"`);
       archive.pipe(res);
 
       for (let i = 0; i < pageCount; i++) {
-        const newPdf = await PDFDocument.create();
-        const [page] = await newPdf.copyPages(pdf, [i]);
-        newPdf.addPage(page);
-        const pdfBytes = await newPdf.save();
-        archive.append(Buffer.from(pdfBytes), { name: `page_${i + 1}.pdf` });
+        try {
+          const newPdf = await PDFDocument.create();
+          const [page] = await newPdf.copyPages(pdf, [i]);
+          newPdf.addPage(page);
+          const pdfBytes = await newPdf.save();
+          archive.append(Buffer.from(pdfBytes), { name: `page_${i + 1}.pdf` });
+        } catch (pageErr) {
+          console.error(`Error splitting page ${i + 1}:`, pageErr);
+          // Continue with other pages if one fails? 
+          // Or fail the whole thing? Let's continue but log.
+        }
       }
 
       await archive.finalize();

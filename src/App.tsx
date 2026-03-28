@@ -164,6 +164,16 @@ export default function App() {
   const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValue?: string) => {
     if (files.length === 0) return;
 
+    // Validate file types for PDF tools
+    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES'];
+    if (pdfTools.includes(action)) {
+      const nonPdfFiles = Array.from(files).filter(f => !f.name.toLowerCase().endsWith('.pdf'));
+      if (nonPdfFiles.length > 0) {
+        setStatus({ message: `❌ Vui lòng chỉ chọn tệp PDF cho chức năng này.`, type: 'error' });
+        return;
+      }
+    }
+
     setStatus({ message: 'Đang chuẩn bị...', type: 'loading' });
 
     try {
@@ -205,15 +215,21 @@ export default function App() {
         case 'IMG_TO_PDF': {
           processedFiles.forEach(file => formData.append('files', file));
           formData.append('quality', quality.toString());
+          console.log('Fetching /api/to-pdf...');
           const response = await fetch('/api/to-pdf', { method: 'POST', body: formData });
-          await checkResponse(response, 'Lỗi tạo PDF');
-          downloadBlob(await response.blob(), 'converted.pdf');
+          const checkedResponse = await checkResponse(response, 'Lỗi tạo PDF');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/pdf' });
+          downloadBlob(blob, 'converted.pdf');
           setStatus({ message: '✅ Đã tạo PDF thành công!', type: 'success' });
           break;
         }
-
         case 'MERGE_PDF': {
-          if (!toolInput && processedFiles.length > 1) {
+          if (processedFiles.length < 2) {
+            throw new Error('Vui lòng chọn ít nhất 2 tệp PDF để gộp.');
+          }
+          
+          if (!toolInput) {
             setToolInput({
               action,
               files: processedFiles,
@@ -224,21 +240,26 @@ export default function App() {
             return;
           }
           
-          const filesToMerge = Array.from(processedFiles);
+          const filesToMerge = Array.from(toolInput.files) as File[];
           filesToMerge.forEach(file => formData.append('files', file));
           const response = await fetch('/api/pdf/merge', { method: 'POST', body: formData });
-          await checkResponse(response, 'Lỗi gộp PDF');
-          downloadBlob(await response.blob(), 'merged.pdf');
+          const checkedResponse = await checkResponse(response, 'Lỗi gộp PDF');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/pdf' });
+          downloadBlob(blob, 'merged.pdf');
           setStatus({ message: '✅ Đã gộp PDF thành công!', type: 'success' });
           setToolInput(null);
           break;
         }
 
         case 'SPLIT_PDF': {
-          formData.append('file', processedFiles[0]);
+          const file = processedFiles[0];
+          formData.append('file', file);
           const response = await fetch('/api/pdf/split', { method: 'POST', body: formData });
-          await checkResponse(response, 'Lỗi tách PDF');
-          downloadBlob(await response.blob(), 'split_pages.zip');
+          const checkedResponse = await checkResponse(response, 'Lỗi tách PDF');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/zip' });
+          downloadBlob(blob, `${file.name.replace(/\.pdf$/i, '')}_split.zip`);
           setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
           break;
         }
@@ -261,8 +282,10 @@ export default function App() {
           formData.append('file', processedFiles[0]);
           formData.append('pages', JSON.stringify(pageIndices));
           const response = await fetch('/api/pdf/delete-pages', { method: 'POST', body: formData });
-          await checkResponse(response, 'Lỗi xóa trang');
-          downloadBlob(await response.blob(), 'modified.pdf');
+          const checkedResponse = await checkResponse(response, 'Lỗi xóa trang');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/pdf' });
+          downloadBlob(blob, 'modified.pdf');
           setStatus({ message: '✅ Đã xóa trang thành công!', type: 'success' });
           setToolInput(null);
           break;
@@ -286,8 +309,10 @@ export default function App() {
           formData.append('file', processedFiles[0]);
           formData.append('pages', JSON.stringify(pageIndices));
           const response = await fetch('/api/pdf/extract-pages', { method: 'POST', body: formData });
-          await checkResponse(response, 'Lỗi trích xuất trang');
-          downloadBlob(await response.blob(), 'extracted.pdf');
+          const checkedResponse = await checkResponse(response, 'Lỗi trích xuất trang');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/pdf' });
+          downloadBlob(blob, 'extracted.pdf');
           setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
           setToolInput(null);
           break;
@@ -311,20 +336,31 @@ export default function App() {
           const format = overrideValue || toolInput?.value || 'jpg';
           const targetFormat = format.toLowerCase() === 'jpg' ? 'jpeg' : 'png';
           
+          console.log(`Processing CONVERT_IMAGE: format=${format}, files=${processedFiles.length}`);
+          
           if (processedFiles.length > 1) {
             processedFiles.forEach(file => formData.append('files', file));
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
+            console.log('Fetching /api/convert-multiple...');
             const response = await fetch('/api/convert-multiple', { method: 'POST', body: formData });
-            await checkResponse(response, 'Lỗi chuyển đổi hàng loạt');
-            downloadBlob(await response.blob(), 'converted_images.zip');
+            const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi hàng loạt');
+            const buffer = await checkedResponse.arrayBuffer();
+            const blob = new Blob([buffer], { type: 'application/zip' });
+            console.log(`Received ZIP buffer: ${buffer.byteLength} bytes`);
+            downloadBlob(blob, 'converted_images.zip');
           } else {
             formData.append('file', processedFiles[0]);
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
+            console.log('Fetching /api/convert...');
             const response = await fetch('/api/convert', { method: 'POST', body: formData });
-            await checkResponse(response, 'Lỗi chuyển đổi ảnh');
-            downloadBlob(await response.blob(), `converted.${format.toLowerCase()}`);
+            const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi ảnh');
+            const buffer = await checkedResponse.arrayBuffer();
+            const contentType = checkedResponse.headers.get('Content-Type') || `image/${targetFormat}`;
+            const blob = new Blob([buffer], { type: contentType });
+            console.log(`Received image buffer: ${buffer.byteLength} bytes, type: ${contentType}`);
+            downloadBlob(blob, `converted.${format.toLowerCase()}`);
           }
           
           setStatus({ message: '✅ Đã chuyển đổi ảnh thành công!', type: 'success' });
@@ -362,8 +398,10 @@ export default function App() {
           }
           
           const response = await fetch('/api/to-pdf', { method: 'POST', body: imageFormData });
-          await checkResponse(response, 'Lỗi nén PDF');
-          downloadBlob(await response.blob(), `${file.name.replace('.pdf', '')}_compressed.pdf`);
+          const checkedResponse = await checkResponse(response, 'Lỗi nén PDF');
+          const buffer = await checkedResponse.arrayBuffer();
+          const blob = new Blob([buffer], { type: 'application/pdf' });
+          downloadBlob(blob, `${file.name.replace('.pdf', '')}_compressed.pdf`);
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
           break;
         }
@@ -398,14 +436,28 @@ export default function App() {
   };
 
   const downloadBlob = (blob: Blob, filename: string) => {
+    if (!blob || blob.size === 0) {
+      console.error('Download failed: Blob is empty or null');
+      return;
+    }
+    console.log(`Triggering download for ${filename} (${blob.size} bytes)`);
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
+    a.style.display = 'none';
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
+    
+    // Trigger click
     a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
+    
+    // Cleanup with delay to ensure browser handles the download request
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+      if (document.body.contains(a)) {
+        document.body.removeChild(a);
+      }
+    }, 1000);
   };
 
   const onDrop = (e: React.DragEvent, action: ToolAction) => {
@@ -707,12 +759,13 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : toolInput.type === 'select' ? (
                   <div className="grid grid-cols-2 gap-3">
                     {toolInput.options?.map(opt => (
                       <button
                         key={opt.value}
                         onClick={() => {
+                          setToolInput({ ...toolInput, value: opt.value });
                           handleProcess(toolInput.files, toolInput.action, opt.value);
                         }}
                         className={`py-4 rounded-xl font-bold transition-all border ${
@@ -725,7 +778,7 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                )}
+                ) : null}
 
                 <div className="flex gap-3 pt-4">
                   <button
@@ -734,7 +787,7 @@ export default function App() {
                   >
                     Hủy
                   </button>
-                  {(toolInput.type === 'text' || toolInput.type === 'reorder') && (
+                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select') && (
                     <button
                       onClick={() => handleProcess(toolInput.files, toolInput.action)}
                       className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
