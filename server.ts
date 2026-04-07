@@ -32,12 +32,13 @@ async function startServer() {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       
-      const { format, quality } = req.body;
+      const { format, quality, dpi } = req.body;
       const q = parseInt(quality) || 85;
+      const d = parseInt(dpi) || 300;
       
-      console.log(`Converting single image: ${req.file.originalname} -> ${format} (quality: ${q})`);
+      console.log(`Converting single image: ${req.file.originalname} -> ${format} (quality: ${q}, DPI: ${d})`);
       
-      let processor = sharp(req.file.buffer);
+      let processor = sharp(req.file.buffer).withMetadata({ density: d });
       
       if (format === "jpeg" || format === "jpg") {
         processor = processor.jpeg({ quality: q, chromaSubsampling: '4:4:4' });
@@ -66,11 +67,12 @@ async function startServer() {
       const files = req.files as Express.Multer.File[];
       if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
       
-      const { format, quality } = req.body;
+      const { format, quality, dpi } = req.body;
       const q = parseInt(quality) || 85;
+      const d = parseInt(dpi) || 300;
       const targetExt = format === 'jpeg' || format === 'jpg' ? 'jpg' : format;
       
-      console.log(`Converting ${files.length} images to ${format} (quality: ${q})`);
+      console.log(`Converting ${files.length} images to ${format} (quality: ${q}, DPI: ${d})`);
       
       const archive = archiver("zip");
       res.set("Content-Type", "application/zip");
@@ -78,7 +80,7 @@ async function startServer() {
       archive.pipe(res);
 
       for (const file of files) {
-        let processor = sharp(file.buffer);
+        let processor = sharp(file.buffer).withMetadata({ density: d });
         
         if (format === "jpeg" || format === "jpg") {
           processor = processor.jpeg({ quality: q, chromaSubsampling: '4:4:4' });
@@ -110,7 +112,8 @@ async function startServer() {
       if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
 
       const quality = parseInt(req.body.quality as string) || 85;
-      console.log(`Creating PDF from ${files.length} images with quality ${quality}`);
+      const dpi = parseInt(req.body.dpi as string) || 300;
+      console.log(`Creating PDF from ${files.length} images with quality ${quality} and DPI ${dpi}`);
       
       const pdfDoc = await PDFDocument.create();
       
@@ -121,12 +124,18 @@ async function startServer() {
           .toBuffer();
         
         const image = await pdfDoc.embedJpg(processedBuffer);
-        const page = pdfDoc.addPage([image.width, image.height]);
+        
+        // Scale dimensions based on DPI (Standard PDF is 72 DPI)
+        const scale = 72 / dpi;
+        const width = image.width * scale;
+        const height = image.height * scale;
+        
+        const page = pdfDoc.addPage([width, height]);
         page.drawImage(image, {
           x: 0,
           y: 0,
-          width: image.width,
-          height: image.height,
+          width: width,
+          height: height,
         });
       }
 
@@ -147,13 +156,19 @@ async function startServer() {
 
       console.log(`Merging ${files.length} PDFs`);
       const mergedPdf = await PDFDocument.create();
+      
       for (const file of files) {
-        const pdf = await PDFDocument.load(file.buffer);
-        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-        copiedPages.forEach((page) => mergedPdf.addPage(page));
+        try {
+          const pdf = await PDFDocument.load(file.buffer, { ignoreEncryption: true });
+          const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+          copiedPages.forEach((page) => mergedPdf.addPage(page));
+        } catch (loadErr) {
+          console.error(`Error loading PDF ${file.originalname}:`, loadErr);
+          return res.status(400).json({ error: `Không thể đọc tệp PDF: ${file.originalname}. Tệp có thể bị hỏng hoặc có mật khẩu bảo vệ.` });
+        }
       }
 
-      const pdfBytes = await mergedPdf.save();
+      const pdfBytes = await mergedPdf.save({ useObjectStreams: true });
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
     } catch (error: any) {
@@ -182,6 +197,7 @@ async function startServer() {
         return res.status(400).json({ error: "Tệp PDF không có trang nào." });
       }
       
+      const padding = pageCount.toString().length;
       const archive = archiver("zip", { zlib: { level: 5 } });
       
       // Handle archive errors
@@ -202,11 +218,10 @@ async function startServer() {
           const [page] = await newPdf.copyPages(pdf, [i]);
           newPdf.addPage(page);
           const pdfBytes = await newPdf.save();
-          archive.append(Buffer.from(pdfBytes), { name: `page_${i + 1}.pdf` });
+          const pageNum = (i + 1).toString().padStart(padding, '0');
+          archive.append(Buffer.from(pdfBytes), { name: `page_${pageNum}.pdf` });
         } catch (pageErr) {
           console.error(`Error splitting page ${i + 1}:`, pageErr);
-          // Continue with other pages if one fails? 
-          // Or fail the whole thing? Let's continue but log.
         }
       }
 
@@ -225,10 +240,16 @@ async function startServer() {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       const pagesToDelete = JSON.parse(req.body.pages);
       
-      console.log(`Deleting pages: ${pagesToDelete.join(", ")}`);
-      const pdf = await PDFDocument.load(req.file.buffer);
-      const newPdf = await PDFDocument.create();
+      console.log(`Deleting pages from ${req.file.originalname}: ${pagesToDelete.join(", ")}`);
       
+      let pdf;
+      try {
+        pdf = await PDFDocument.load(req.file.buffer, { ignoreEncryption: true });
+      } catch (e) {
+        return res.status(400).json({ error: "Không thể đọc tệp PDF. Tệp có thể bị hỏng hoặc có mật khẩu bảo vệ." });
+      }
+
+      const newPdf = await PDFDocument.create();
       const totalPages = pdf.getPageCount();
       const pageIndices = pdf.getPageIndices().filter(i => !pagesToDelete.includes(i));
       
@@ -239,7 +260,7 @@ async function startServer() {
       const copiedPages = await newPdf.copyPages(pdf, pageIndices);
       copiedPages.forEach(page => newPdf.addPage(page));
 
-      const pdfBytes = await newPdf.save();
+      const pdfBytes = await newPdf.save({ useObjectStreams: true });
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
     } catch (error: any) {
@@ -254,10 +275,16 @@ async function startServer() {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       const pagesToExtract = JSON.parse(req.body.pages);
       
-      console.log(`Extracting pages: ${pagesToExtract.join(", ")}`);
-      const pdf = await PDFDocument.load(req.file.buffer);
-      const newPdf = await PDFDocument.create();
+      console.log(`Extracting pages from ${req.file.originalname}: ${pagesToExtract.join(", ")}`);
       
+      let pdf;
+      try {
+        pdf = await PDFDocument.load(req.file.buffer, { ignoreEncryption: true });
+      } catch (e) {
+        return res.status(400).json({ error: "Không thể đọc tệp PDF. Tệp có thể bị hỏng hoặc có mật khẩu bảo vệ." });
+      }
+
+      const newPdf = await PDFDocument.create();
       const totalPages = pdf.getPageCount();
       const validPages = pagesToExtract.filter((p: number) => p >= 0 && p < totalPages);
       
@@ -268,7 +295,7 @@ async function startServer() {
       const copiedPages = await newPdf.copyPages(pdf, validPages);
       copiedPages.forEach(page => newPdf.addPage(page));
 
-      const pdfBytes = await newPdf.save();
+      const pdfBytes = await newPdf.save({ useObjectStreams: true });
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
     } catch (error: any) {

@@ -63,7 +63,7 @@ const TOOLS: Tool[] = [
   { 
     id: 'PDF_TO_IMG', 
     title: 'PDF sang Ảnh (JPG)', 
-    icon: <FileImage className="w-10 h-10 text-slate-700" />, 
+    icon: <ImageIcon className="w-10 h-10 text-slate-700" />, 
     description: 'Tách các trang PDF thành các file ảnh (tải về file ZIP)',
     accept: '.pdf'
   },
@@ -77,7 +77,7 @@ const TOOLS: Tool[] = [
   { 
     id: 'COMPRESS_PDF', 
     title: 'Nén tệp PDF', 
-    icon: <FileArchive className="w-10 h-10 text-slate-700" />, 
+    icon: <Package className="w-10 h-10 text-slate-700" />, 
     description: 'Giảm dung lượng tệp PDF mà vẫn giữ chất lượng',
     accept: '.pdf'
   },
@@ -86,7 +86,8 @@ const TOOLS: Tool[] = [
     title: 'Chuyển sang Ảnh (JPG/PNG)', 
     icon: <ImageIcon className="w-10 h-10 text-slate-700" />, 
     description: 'Chuyển đổi qua lại giữa JPG và PNG',
-    accept: 'image/*,.heic,.heif,.jfif'
+    accept: 'image/*,.heic,.heif,.jfif',
+    multiple: true
   },
   { 
     id: 'MERGE_PDF', 
@@ -192,6 +193,7 @@ export default function App() {
           const pdf = await loadingTask.promise;
           const numPages = pdf.numPages;
           const zip = new JSZip();
+          const padding = numPages.toString().length;
           
           for (let i = 1; i <= numPages; i++) {
             const page = await pdf.getPage(i);
@@ -203,7 +205,8 @@ export default function App() {
             canvas.width = viewport.width;
             await page.render({ canvasContext: context, viewport: viewport } as any).promise;
             const imgData = canvas.toDataURL('image/jpeg', quality / 100);
-            zip.file(`page_${i}.jpg`, imgData.split(',')[1], { base64: true });
+            const pageNum = i.toString().padStart(padding, '0');
+            zip.file(`page_${pageNum}.jpg`, imgData.split(',')[1], { base64: true });
             setStatus({ message: `Đang xử lý: ${i}/${numPages} trang...`, type: 'loading' });
           }
           const content = await zip.generateAsync({ type: 'blob' });
@@ -215,6 +218,7 @@ export default function App() {
         case 'IMG_TO_PDF': {
           processedFiles.forEach(file => formData.append('files', file));
           formData.append('quality', quality.toString());
+          formData.append('dpi', dpi.toString());
           console.log('Fetching /api/to-pdf...');
           const response = await fetch('/api/to-pdf', { method: 'POST', body: formData });
           const checkedResponse = await checkResponse(response, 'Lỗi tạo PDF');
@@ -342,6 +346,7 @@ export default function App() {
             processedFiles.forEach(file => formData.append('files', file));
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
+            formData.append('dpi', dpi.toString());
             console.log('Fetching /api/convert-multiple...');
             const response = await fetch('/api/convert-multiple', { method: 'POST', body: formData });
             const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi hàng loạt');
@@ -353,6 +358,7 @@ export default function App() {
             formData.append('file', processedFiles[0]);
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
+            formData.append('dpi', dpi.toString());
             console.log('Fetching /api/convert...');
             const response = await fetch('/api/convert', { method: 'POST', body: formData });
             const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi ảnh');
@@ -376,9 +382,11 @@ export default function App() {
           const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
           const numPages = pdf.numPages;
+          const padding = numPages.toString().length;
           
           const imageFormData = new FormData();
           imageFormData.append('quality', quality.toString());
+          imageFormData.append('dpi', dpi.toString());
           
           for (let i = 1; i <= numPages; i++) {
             const page = await pdf.getPage(i);
@@ -392,7 +400,8 @@ export default function App() {
             
             const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
             if (blob) {
-              imageFormData.append('files', blob, `page_${i}.jpg`);
+              const pageNum = i.toString().padStart(padding, '0');
+              imageFormData.append('files', blob, `page_${pageNum}.jpg`);
             }
             setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
           }
@@ -553,11 +562,12 @@ export default function App() {
           transition={{ duration: 0.6 }}
         >
           <h1 className="text-5xl font-bold tracking-tight mb-4 text-slate-800">
-            Tool Văn Phòng
+            Tool Văn Phòng - v.2.0
           </h1>
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Chọn chất lượng nén, DPI và kéo thả tệp để xử lý
           </p>
+          <p className="text-sm text-slate-400 mt-2">by Brillian Pham</p>
         </motion.div>
       </header>
 
