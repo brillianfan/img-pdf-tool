@@ -395,7 +395,18 @@ export default function App() {
           console.log(`Processing CONVERT_IMAGE: format=${format}, files=${processedFiles.length}`);
           
           if (processedFiles.length > 1) {
-            processedFiles.forEach(file => formData.append('files', file));
+            setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+            for (let i = 0; i < processedFiles.length; i++) {
+              const file = processedFiles[i];
+              setStatus({ message: `Đang nén ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
+              try {
+                const compressedBlob = await compressImage(file, quality, dpi);
+                formData.append('files', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+              } catch (err) {
+                console.error('Compression error:', err);
+                formData.append('files', file);
+              }
+            }
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
             formData.append('dpi', dpi.toString());
@@ -407,7 +418,15 @@ export default function App() {
             console.log(`Received ZIP buffer: ${buffer.byteLength} bytes`);
             downloadBlob(blob, 'converted_images.zip');
           } else {
-            formData.append('file', processedFiles[0]);
+            setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+            const file = processedFiles[0];
+            try {
+              const compressedBlob = await compressImage(file, quality, dpi);
+              formData.append('file', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+            } catch (err) {
+              console.error('Compression error:', err);
+              formData.append('file', file);
+            }
             formData.append('format', targetFormat);
             formData.append('quality', quality.toString());
             formData.append('dpi', dpi.toString());
