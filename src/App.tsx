@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
 
@@ -167,7 +168,7 @@ export default function App() {
     setTimeout(() => setStatus(null), 2000);
   };
 
-  const compressImage = async (file: File, quality: number, dpi: number): Promise<Blob> => {
+  const compressImage = async (file: File, quality: number, dpi: number, format: string = 'image/jpeg'): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.src = URL.createObjectURL(file);
@@ -180,11 +181,6 @@ export default function App() {
           return;
         }
 
-        // Calculate dimensions based on DPI
-        // Standard screen is 96 DPI, but we want to target the user's DPI
-        // For simplicity, we'll keep the original resolution but apply compression
-        // If we want to be more aggressive, we could resize.
-        // But let's just use canvas.toBlob with quality first.
         canvas.width = img.width;
         canvas.height = img.height;
         ctx.drawImage(img, 0, 0);
@@ -194,7 +190,7 @@ export default function App() {
             if (blob) resolve(blob);
             else reject(new Error('Canvas toBlob failed'));
           },
-          'image/jpeg',
+          format,
           quality / 100
         );
       };
@@ -257,25 +253,51 @@ export default function App() {
 
         case 'IMG_TO_PDF': {
           setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+          const pdfDoc = await PDFDocument.create();
+          
           for (let i = 0; i < processedFiles.length; i++) {
             const file = processedFiles[i];
-            setStatus({ message: `Đang nén ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
+            setStatus({ message: `Đang nén và gộp ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
             try {
               const compressedBlob = await compressImage(file, quality, dpi);
-              formData.append('files', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+              const arrayBuffer = await compressedBlob.arrayBuffer();
+              const image = await pdfDoc.embedJpg(arrayBuffer);
+              
+              const scale = 72 / dpi;
+              const width = image.width * scale;
+              const height = image.height * scale;
+              
+              const page = pdfDoc.addPage([width, height]);
+              page.drawImage(image, {
+                x: 0,
+                y: 0,
+                width: width,
+                height: height,
+              });
             } catch (err) {
-              console.error('Compression error:', err);
-              formData.append('files', file); // Fallback to original
+              console.error('Error embedding image:', err);
+              // Try original if compression fails
+              try {
+                const arrayBuffer = await file.arrayBuffer();
+                let image;
+                if (file.type === 'image/png') {
+                  image = await pdfDoc.embedPng(arrayBuffer);
+                } else {
+                  image = await pdfDoc.embedJpg(arrayBuffer);
+                }
+                const scale = 72 / dpi;
+                const width = image.width * scale;
+                const height = image.height * scale;
+                const page = pdfDoc.addPage([width, height]);
+                page.drawImage(image, { x: 0, y: 0, width, height });
+              } catch (innerErr) {
+                console.error('Failed to embed original image:', innerErr);
+              }
             }
           }
           
-          formData.append('quality', quality.toString());
-          formData.append('dpi', dpi.toString());
-          console.log('Fetching /api/to-pdf...');
-          const response = await fetch('/api/to-pdf', { method: 'POST', body: formData });
-          const checkedResponse = await checkResponse(response, 'Lỗi tạo PDF');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/pdf' });
+          const pdfBytes = await pdfDoc.save();
+          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, 'converted.pdf');
           setStatus({ message: '✅ Đã tạo PDF thành công!', type: 'success' });
           break;
@@ -296,12 +318,19 @@ export default function App() {
             return;
           }
           
+          setStatus({ message: '🔄 Đang gộp các tệp PDF...', type: 'loading' });
+          const mergedPdf = await PDFDocument.create();
           const filesToMerge = Array.from(toolInput.files) as File[];
-          filesToMerge.forEach(file => formData.append('files', file));
-          const response = await fetch('/api/pdf/merge', { method: 'POST', body: formData });
-          const checkedResponse = await checkResponse(response, 'Lỗi gộp PDF');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/pdf' });
+          
+          for (const file of filesToMerge) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+            copiedPages.forEach((page) => mergedPdf.addPage(page));
+          }
+          
+          const pdfBytes = await mergedPdf.save();
+          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, 'merged.pdf');
           setStatus({ message: '✅ Đã gộp PDF thành công!', type: 'success' });
           setToolInput(null);
@@ -310,12 +339,26 @@ export default function App() {
 
         case 'SPLIT_PDF': {
           const file = processedFiles[0];
-          formData.append('file', file);
-          const response = await fetch('/api/pdf/split', { method: 'POST', body: formData });
-          const checkedResponse = await checkResponse(response, 'Lỗi tách PDF');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/zip' });
-          downloadBlob(blob, `${file.name.replace(/\.pdf$/i, '')}_split.zip`);
+          setStatus({ message: '🔄 Đang tách các trang PDF...', type: 'loading' });
+          
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+          const pageCount = pdf.getPageCount();
+          const zip = new JSZip();
+          const padding = pageCount.toString().length;
+          
+          for (let i = 0; i < pageCount; i++) {
+            setStatus({ message: `Đang tách trang: ${i + 1}/${pageCount}...`, type: 'loading' });
+            const newPdf = await PDFDocument.create();
+            const [page] = await newPdf.copyPages(pdf, [i]);
+            newPdf.addPage(page);
+            const pdfBytes = await newPdf.save();
+            const pageNum = (i + 1).toString().padStart(padding, '0');
+            zip.file(`page_${pageNum}.pdf`, pdfBytes);
+          }
+          
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          downloadBlob(zipBlob, `${file.name.replace(/\.pdf$/i, '')}_split.zip`);
           setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
           break;
         }
@@ -335,12 +378,24 @@ export default function App() {
           const pageIndices = parsePageInput(pagesInput);
           if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
           
-          formData.append('file', processedFiles[0]);
-          formData.append('pages', JSON.stringify(pageIndices));
-          const response = await fetch('/api/pdf/delete-pages', { method: 'POST', body: formData });
-          const checkedResponse = await checkResponse(response, 'Lỗi xóa trang');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/pdf' });
+          setStatus({ message: '🔄 Đang xóa các trang PDF...', type: 'loading' });
+          const file = processedFiles[0];
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+          
+          const newPdf = await PDFDocument.create();
+          const totalPages = pdf.getPageCount();
+          const indicesToKeep = pdf.getPageIndices().filter(i => !pageIndices.includes(i));
+          
+          if (indicesToKeep.length === 0) {
+            throw new Error('Không thể xóa tất cả các trang');
+          }
+
+          const copiedPages = await newPdf.copyPages(pdf, indicesToKeep);
+          copiedPages.forEach(page => newPdf.addPage(page));
+
+          const pdfBytes = await newPdf.save();
+          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, 'modified.pdf');
           setStatus({ message: '✅ Đã xóa trang thành công!', type: 'success' });
           setToolInput(null);
@@ -362,12 +417,24 @@ export default function App() {
           const pageIndices = parsePageInput(pagesInput);
           if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
 
-          formData.append('file', processedFiles[0]);
-          formData.append('pages', JSON.stringify(pageIndices));
-          const response = await fetch('/api/pdf/extract-pages', { method: 'POST', body: formData });
-          const checkedResponse = await checkResponse(response, 'Lỗi trích xuất trang');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/pdf' });
+          setStatus({ message: '🔄 Đang trích xuất các trang PDF...', type: 'loading' });
+          const file = processedFiles[0];
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+          
+          const newPdf = await PDFDocument.create();
+          const totalPages = pdf.getPageCount();
+          const validIndices = pageIndices.filter(i => i >= 0 && i < totalPages);
+          
+          if (validIndices.length === 0) {
+            throw new Error('Số trang trích xuất không hợp lệ');
+          }
+
+          const copiedPages = await newPdf.copyPages(pdf, validIndices);
+          copiedPages.forEach(page => newPdf.addPage(page));
+
+          const pdfBytes = await newPdf.save();
+          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, 'extracted.pdf');
           setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
           setToolInput(null);
@@ -395,49 +462,37 @@ export default function App() {
           console.log(`Processing CONVERT_IMAGE: format=${format}, files=${processedFiles.length}`);
           
           if (processedFiles.length > 1) {
-            setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+            setStatus({ message: '🔄 Đang chuyển đổi ảnh...', type: 'loading' });
+            const zip = new JSZip();
+            
             for (let i = 0; i < processedFiles.length; i++) {
               const file = processedFiles[i];
-              setStatus({ message: `Đang nén ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
+              setStatus({ message: `Đang xử lý ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
               try {
-                const compressedBlob = await compressImage(file, quality, dpi);
-                formData.append('files', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+                const convertedBlob = await compressImage(file, quality, dpi, `image/${targetFormat}`);
+                const arrayBuffer = await convertedBlob.arrayBuffer();
+                const fileName = file.name.replace(/\.[^/.]+$/, "") + (format.toLowerCase() === 'jpg' ? '.jpg' : '.png');
+                zip.file(fileName, arrayBuffer);
               } catch (err) {
-                console.error('Compression error:', err);
-                formData.append('files', file);
+                console.error('Conversion error:', err);
+                const arrayBuffer = await file.arrayBuffer();
+                zip.file(file.name, arrayBuffer);
               }
             }
-            formData.append('format', targetFormat);
-            formData.append('quality', quality.toString());
-            formData.append('dpi', dpi.toString());
-            console.log('Fetching /api/convert-multiple...');
-            const response = await fetch('/api/convert-multiple', { method: 'POST', body: formData });
-            const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi hàng loạt');
-            const buffer = await checkedResponse.arrayBuffer();
-            const blob = new Blob([buffer], { type: 'application/zip' });
-            console.log(`Received ZIP buffer: ${buffer.byteLength} bytes`);
-            downloadBlob(blob, 'converted_images.zip');
+            
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, 'converted_images.zip');
           } else {
-            setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+            setStatus({ message: '🔄 Đang chuyển đổi ảnh...', type: 'loading' });
             const file = processedFiles[0];
             try {
-              const compressedBlob = await compressImage(file, quality, dpi);
-              formData.append('file', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+              const convertedBlob = await compressImage(file, quality, dpi, `image/${targetFormat}`);
+              const fileName = `converted.${format.toLowerCase()}`;
+              downloadBlob(convertedBlob, fileName);
             } catch (err) {
-              console.error('Compression error:', err);
-              formData.append('file', file);
+              console.error('Conversion error:', err);
+              downloadBlob(file, file.name);
             }
-            formData.append('format', targetFormat);
-            formData.append('quality', quality.toString());
-            formData.append('dpi', dpi.toString());
-            console.log('Fetching /api/convert...');
-            const response = await fetch('/api/convert', { method: 'POST', body: formData });
-            const checkedResponse = await checkResponse(response, 'Lỗi chuyển đổi ảnh');
-            const buffer = await checkedResponse.arrayBuffer();
-            const contentType = checkedResponse.headers.get('Content-Type') || `image/${targetFormat}`;
-            const blob = new Blob([buffer], { type: contentType });
-            console.log(`Received image buffer: ${buffer.byteLength} bytes, type: ${contentType}`);
-            downloadBlob(blob, `converted.${format.toLowerCase()}`);
           }
           
           setStatus({ message: '✅ Đã chuyển đổi ảnh thành công!', type: 'success' });
@@ -453,13 +508,11 @@ export default function App() {
           const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
           const numPages = pdf.numPages;
-          const padding = numPages.toString().length;
           
-          const imageFormData = new FormData();
-          imageFormData.append('quality', quality.toString());
-          imageFormData.append('dpi', dpi.toString());
+          const pdfDoc = await PDFDocument.create();
           
           for (let i = 1; i <= numPages; i++) {
+            setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
             const page = await pdf.getPage(i);
             const viewport = page.getViewport({ scale: dpi / 72 }); 
             const canvas = document.createElement('canvas');
@@ -471,16 +524,25 @@ export default function App() {
             
             const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
             if (blob) {
-              const pageNum = i.toString().padStart(padding, '0');
-              imageFormData.append('files', blob, `page_${pageNum}.jpg`);
+              const imgBuffer = await blob.arrayBuffer();
+              const image = await pdfDoc.embedJpg(imgBuffer);
+              
+              const scale = 72 / dpi;
+              const width = image.width * scale;
+              const height = image.height * scale;
+              
+              const newPage = pdfDoc.addPage([width, height]);
+              newPage.drawImage(image, {
+                x: 0,
+                y: 0,
+                width: width,
+                height: height,
+              });
             }
-            setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
           }
           
-          const response = await fetch('/api/to-pdf', { method: 'POST', body: imageFormData });
-          const checkedResponse = await checkResponse(response, 'Lỗi nén PDF');
-          const buffer = await checkedResponse.arrayBuffer();
-          const blob = new Blob([buffer], { type: 'application/pdf' });
+          const pdfBytes = await pdfDoc.save();
+          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, `${file.name.replace('.pdf', '')}_compressed.pdf`);
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
           break;
