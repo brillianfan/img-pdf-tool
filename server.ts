@@ -117,29 +117,49 @@ async function startServer() {
       
       const pdfDoc = await PDFDocument.create();
       
-      for (const file of files) {
-        // Always process with sharp to ensure compatibility and apply quality
-        const processedBuffer = await sharp(file.buffer)
-          .jpeg({ quality })
-          .toBuffer();
-        
-        const image = await pdfDoc.embedJpg(processedBuffer);
-        
-        // Scale dimensions based on DPI (Standard PDF is 72 DPI)
-        const scale = 72 / dpi;
-        const width = image.width * scale;
-        const height = image.height * scale;
-        
-        const page = pdfDoc.addPage([width, height]);
-        page.drawImage(image, {
-          x: 0,
-          y: 0,
-          width: width,
-          height: height,
-        });
+      // Process images in parallel with sharp
+      const processedBuffers = await Promise.all(
+        files.map(async (file) => {
+          try {
+            return await sharp(file.buffer)
+              .jpeg({ quality })
+              .toBuffer();
+          } catch (err) {
+            console.error(`Sharp error for file ${file.originalname}:`, err);
+            // If sharp fails, try to use original buffer if it's an image
+            return file.buffer;
+          }
+        })
+      );
+
+      for (const buffer of processedBuffers) {
+        try {
+          let image;
+          try {
+            image = await pdfDoc.embedJpg(buffer);
+          } catch (e) {
+            // If embedJpg fails, try embedPng
+            image = await pdfDoc.embedPng(buffer);
+          }
+          
+          const scale = 72 / dpi;
+          const width = image.width * scale;
+          const height = image.height * scale;
+          
+          const page = pdfDoc.addPage([width, height]);
+          page.drawImage(image, {
+            x: 0,
+            y: 0,
+            width: width,
+            height: height,
+          });
+        } catch (err) {
+          console.error("Error embedding image into PDF:", err);
+          // Skip this image if it fails
+        }
       }
 
-      const pdfBytes = await pdfDoc.save();
+      const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
       res.set("Content-Type", "application/pdf");
       res.send(Buffer.from(pdfBytes));
     } catch (error: any) {

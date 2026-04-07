@@ -148,7 +148,12 @@ export default function App() {
         const errorData = await response.json();
         errorMessage = errorData.error || defaultError;
       } catch (e) {
-        // Not JSON
+        // Not JSON, might be a server error or proxy error (like Vercel payload limit)
+        if (response.status === 413) {
+          errorMessage = "Tệp quá lớn. Vui lòng giảm số lượng ảnh hoặc chất lượng.";
+        } else {
+          errorMessage = `${defaultError} (Mã lỗi: ${response.status} ${response.statusText})`;
+        }
       }
       throw new Error(errorMessage);
     }
@@ -160,6 +165,41 @@ export default function App() {
     setDpi(300);
     setStatus({ message: 'Đã khôi phục cài đặt gốc!', type: 'success' });
     setTimeout(() => setStatus(null), 2000);
+  };
+
+  const compressImage = async (file: File, quality: number, dpi: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.src = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(img.src);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Could not get canvas context'));
+          return;
+        }
+
+        // Calculate dimensions based on DPI
+        // Standard screen is 96 DPI, but we want to target the user's DPI
+        // For simplicity, we'll keep the original resolution but apply compression
+        // If we want to be more aggressive, we could resize.
+        // But let's just use canvas.toBlob with quality first.
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Canvas toBlob failed'));
+          },
+          'image/jpeg',
+          quality / 100
+        );
+      };
+      img.onerror = () => reject(new Error('Could not load image'));
+    });
   };
 
   const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValue?: string) => {
@@ -216,7 +256,19 @@ export default function App() {
         }
 
         case 'IMG_TO_PDF': {
-          processedFiles.forEach(file => formData.append('files', file));
+          setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
+          for (let i = 0; i < processedFiles.length; i++) {
+            const file = processedFiles[i];
+            setStatus({ message: `Đang nén ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
+            try {
+              const compressedBlob = await compressImage(file, quality, dpi);
+              formData.append('files', compressedBlob, file.name.replace(/\.[^/.]+$/, "") + ".jpg");
+            } catch (err) {
+              console.error('Compression error:', err);
+              formData.append('files', file); // Fallback to original
+            }
+          }
+          
           formData.append('quality', quality.toString());
           formData.append('dpi', dpi.toString());
           console.log('Fetching /api/to-pdf...');
