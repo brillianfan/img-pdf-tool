@@ -25,13 +25,26 @@ import {
   ChevronRight,
   ChevronLeft,
   ImagePlus,
-  RotateCcw
+  RotateCcw,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  Settings,
+  Maximize2,
+  Palette,
+  GripVertical
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { Cropper, ReactCropperElement } from 'react-cropper';
 import 'cropperjs/dist/cropper.css';
 import Tesseract from 'tesseract.js';
 import { GoogleGenAI } from "@google/genai";
+import * as Tabs from '@radix-ui/react-tabs';
+import * as Dialog from '@radix-ui/react-dialog';
+import * as Select from '@radix-ui/react-select';
+import * as Slider from '@radix-ui/react-slider';
+import * as Switch from '@radix-ui/react-switch';
 
 interface PhotoEditorProps {
   file: File;
@@ -40,6 +53,14 @@ interface PhotoEditorProps {
 }
 
 type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop';
+
+interface ExportSettings {
+  format: 'png' | 'jpeg';
+  quality: number;
+  dpi: number;
+  width: number;
+  height: number;
+}
 
 export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,6 +79,16 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
+  const [layers, setLayers] = useState<fabric.Object[]>([]);
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [originalSize, setOriginalSize] = useState({ width: 0, height: 0 });
+  const [exportSettings, setExportSettings] = useState<ExportSettings>({
+    format: 'png',
+    quality: 0.9,
+    dpi: 300,
+    width: 800,
+    height: 600
+  });
 
   // Initialize Canvas
   useEffect(() => {
@@ -67,6 +98,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       width: 800,
       height: 600,
       backgroundColor: '#ffffff',
+      preserveObjectStacking: true,
     });
 
     fabricCanvas.current = canvas;
@@ -76,7 +108,9 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     reader.onload = (e) => {
       const url = e.target?.result as string;
       fabric.Image.fromURL(url).then((img) => {
-        // Scale image to fit canvas
+        setOriginalSize({ width: img.width!, height: img.height! });
+        setExportSettings(prev => ({ ...prev, width: img.width!, height: img.height! }));
+        
         const canvasWidth = canvas.getWidth();
         const canvasHeight = canvas.getHeight();
         const scale = Math.min(canvasWidth / img.width!, canvasHeight / img.height!, 1);
@@ -87,11 +121,13 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           left: (canvasWidth - img.width! * scale) / 2,
           top: (canvasHeight - img.height! * scale) / 2,
           selectable: true,
+          name: 'Background'
         });
         
         canvas.add(img);
         canvas.setActiveObject(img);
         canvas.renderAll();
+        updateLayers();
         saveHistory();
       });
     };
@@ -101,12 +137,29 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.on('selection:created', (e) => setActiveObject(e.selected?.[0] || null));
     canvas.on('selection:updated', (e) => setActiveObject(e.selected?.[0] || null));
     canvas.on('selection:cleared', () => setActiveObject(null));
-    canvas.on('object:modified', () => saveHistory());
-    canvas.on('object:added', () => saveHistory());
+    canvas.on('object:modified', () => {
+      saveHistory();
+      updateLayers();
+    });
+    canvas.on('object:added', () => {
+      saveHistory();
+      updateLayers();
+    });
+    canvas.on('object:removed', () => {
+      saveHistory();
+      updateLayers();
+    });
 
     return () => {
       canvas.dispose();
     };
+  }, []);
+
+  const updateLayers = useCallback(() => {
+    const canvas = fabricCanvas.current;
+    if (!canvas) return;
+    // Reverse to show top layers at the top of the list
+    setLayers([...canvas.getObjects()].reverse());
   }, []);
 
   // Mode Management
@@ -122,9 +175,6 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         canvas.freeDrawingBrush.color = color;
         canvas.freeDrawingBrush.width = brushSize;
       } else if (mode === 'eraser') {
-        // Fabric 6 doesn't have a built-in eraser brush in the same way, 
-        // but we can use a pencil brush with destination-out or just white for now
-        // For a true eraser in Fabric 6, it's more complex, let's use white for simplicity in "simple" version
         canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
         canvas.freeDrawingBrush.color = '#ffffff';
         canvas.freeDrawingBrush.width = brushSize;
@@ -136,9 +186,11 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     const canvas = fabricCanvas.current;
     if (!canvas || !activeObject) return;
     
-    activeObject.set('opacity', opacity);
-    canvas.renderAll();
-  }, [opacity]);
+    if (activeObject.get('opacity') !== opacity) {
+      activeObject.set('opacity', opacity);
+      canvas.renderAll();
+    }
+  }, [opacity, activeObject]);
 
   const saveHistory = useCallback(() => {
     const canvas = fabricCanvas.current;
@@ -156,6 +208,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       canvas.loadFromJSON(history[prevIndex]).then(() => {
         canvas.renderAll();
         setHistoryIndex(prevIndex);
+        updateLayers();
       });
     }
   };
@@ -168,6 +221,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       canvas.loadFromJSON(history[nextIndex]).then(() => {
         canvas.renderAll();
         setHistoryIndex(nextIndex);
+        updateLayers();
       });
     }
   };
@@ -193,6 +247,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           left: (canvasWidth - img.width! * scale) / 2,
           top: (canvasHeight - img.height! * scale) / 2,
           selectable: true,
+          name: 'Background'
         });
         
         canvas.add(img);
@@ -201,6 +256,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         setHistory([]);
         setHistoryIndex(-1);
         saveHistory();
+        updateLayers();
       });
     };
     reader.readAsDataURL(file);
@@ -217,7 +273,6 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         const canvas = fabricCanvas.current;
         if (!canvas) return;
 
-        // Scale down if too large
         const maxDim = 300;
         if (img.width! > maxDim || img.height! > maxDim) {
           const scale = maxDim / Math.max(img.width!, img.height!);
@@ -228,16 +283,17 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           left: 100,
           top: 100,
           selectable: true,
+          name: `Image ${layers.length}`
         });
 
         canvas.add(img);
         canvas.setActiveObject(img);
         canvas.renderAll();
         saveHistory();
+        updateLayers();
       });
     };
     reader.readAsDataURL(file);
-    // Reset input
     e.target.value = '';
   };
 
@@ -250,17 +306,25 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       fontFamily: 'Inter',
       fill: color,
       fontSize: 24,
+      name: `Text ${layers.length}`
     });
     canvas.add(text);
     canvas.setActiveObject(text);
     setMode('select');
+    updateLayers();
   };
 
   const addShape = (type: 'rect' | 'circle' | 'triangle') => {
     const canvas = fabricCanvas.current;
     if (!canvas) return;
     let shape;
-    const common = { left: 100, top: 100, fill: color, opacity };
+    const common = { 
+      left: 100, 
+      top: 100, 
+      fill: color, 
+      opacity,
+      name: `${type.charAt(0).toUpperCase() + type.slice(1)} ${layers.length}`
+    };
     
     if (type === 'rect') shape = new fabric.Rect({ ...common, width: 100, height: 100 });
     else if (type === 'circle') shape = new fabric.Circle({ ...common, radius: 50 });
@@ -269,6 +333,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.add(shape);
     canvas.setActiveObject(shape);
     setMode('select');
+    updateLayers();
   };
 
   const deleteObject = () => {
@@ -277,6 +342,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.remove(activeObject);
     canvas.discardActiveObject();
     canvas.renderAll();
+    updateLayers();
   };
 
   const applyFilter = (filterType: string) => {
@@ -327,6 +393,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       setIsCropMode(false);
       setCropImage(null);
       saveHistory();
+      updateLayers();
     });
   };
 
@@ -382,18 +449,88 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     }
   };
 
-  const downloadImage = () => {
+  const handleExport = () => {
     const canvas = fabricCanvas.current;
     if (!canvas) return;
-    const dataUrl = canvas.toDataURL({ format: 'png' });
+
+    // Calculate multiplier based on requested width vs current canvas width
+    const multiplier = exportSettings.width / canvas.getWidth();
+    
+    const dataUrl = canvas.toDataURL({
+      format: exportSettings.format,
+      quality: exportSettings.quality,
+      multiplier: multiplier,
+    });
+
     const link = document.createElement('a');
-    link.download = 'edited-image.png';
+    link.download = `edited-image.${exportSettings.format}`;
     link.href = dataUrl;
     link.click();
+    setShowExportDialog(false);
+  };
+
+  const reorderLayers = (newLayers: fabric.Object[]) => {
+    const canvas = fabricCanvas.current;
+    if (!canvas) return;
+
+    // Fabric layers are 0-indexed from bottom to top
+    // newLayers is top to bottom
+    const reversed = [...newLayers].reverse();
+    reversed.forEach((obj, index) => {
+      canvas.moveObjectTo(obj, index);
+    });
+    canvas.renderAll();
+    setLayers(newLayers);
+    saveHistory();
+  };
+
+  const toggleLayerVisibility = (obj: fabric.Object) => {
+    obj.set('visible', !obj.visible);
+    fabricCanvas.current?.renderAll();
+    updateLayers();
+  };
+
+  const toggleLayerLock = (obj: fabric.Object) => {
+    const isLocked = obj.lockMovementX;
+    obj.set({
+      lockMovementX: !isLocked,
+      lockMovementY: !isLocked,
+      lockScalingX: !isLocked,
+      lockScalingY: !isLocked,
+      lockRotation: !isLocked,
+      selectable: isLocked,
+    });
+    fabricCanvas.current?.renderAll();
+    updateLayers();
+  };
+
+  const updateLayerStyle = (property: string, value: any) => {
+    const canvas = fabricCanvas.current;
+    if (!canvas || !activeObject) return;
+
+    if (property === 'blendMode') {
+      activeObject.set('globalCompositeOperation', value);
+    } else if (property === 'stroke') {
+      activeObject.set('stroke', value);
+      activeObject.set('strokeWidth', 2);
+    } else if (property === 'shadow') {
+      activeObject.set('shadow', value ? new fabric.Shadow({
+        color: 'rgba(0,0,0,0.5)',
+        blur: 10,
+        offsetX: 5,
+        offsetY: 5
+      }) : null);
+    } else {
+      activeObject.set(property as any, value);
+    }
+    
+    canvas.renderAll();
+    saveHistory();
+    updateLayers();
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-hidden font-sans">
+    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-hidden font-sans text-slate-200">
       {/* Top Bar */}
       <div className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md">
         <div className="flex items-center gap-4">
@@ -401,7 +538,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
             <X className="w-6 h-6" />
           </button>
           <div className="h-6 w-px bg-slate-800" />
-          <h2 className="text-slate-200 font-medium">Trình chỉnh sửa ảnh</h2>
+          <h2 className="text-slate-200 font-medium">Trình chỉnh sửa ảnh Pro</h2>
         </div>
 
         <div className="flex items-center gap-2">
@@ -436,18 +573,11 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
             AI Gợi ý
           </button>
           <button 
-            onClick={handleOcr}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full text-sm font-medium transition-all"
-          >
-            <FileText className="w-4 h-4" />
-            Trích xuất chữ
-          </button>
-          <button 
-            onClick={downloadImage}
+            onClick={() => setShowExportDialog(true)}
             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-emerald-500/20"
           >
             <Download className="w-4 h-4" />
-            Tải về
+            Xuất ảnh
           </button>
         </div>
       </div>
@@ -561,69 +691,316 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           </AnimatePresence>
         </div>
 
-        {/* Right Properties Panel */}
-        <div className="w-72 border-l border-slate-800 bg-slate-900 p-6 flex flex-col gap-8 overflow-y-auto">
-          {/* Colors */}
-          <section>
-            <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Màu sắc</h3>
-            <div className="grid grid-cols-6 gap-2">
-              {['#000000', '#ffffff', '#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7', '#ec4899', '#64748b', '#475569'].map(c => (
-                <button 
-                  key={c}
-                  onClick={() => setColor(c)}
-                  className={`w-8 h-8 rounded-full border-2 transition-all ${color === c ? 'border-white scale-110' : 'border-transparent hover:scale-105'}`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-              <input 
-                type="color" 
-                value={color} 
-                onChange={(e) => setColor(e.target.value)}
-                className="w-8 h-8 rounded-full overflow-hidden border-none p-0 cursor-pointer"
-              />
-            </div>
-          </section>
+        {/* Right Panel (Tabs) */}
+        <div className="w-80 border-l border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
+          <Tabs.Root defaultValue="layers" className="flex flex-col h-full">
+            <Tabs.List className="flex border-b border-slate-800">
+              <Tabs.Trigger value="layers" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                Layers
+              </Tabs.Trigger>
+              <Tabs.Trigger value="properties" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                Properties
+              </Tabs.Trigger>
+              <Tabs.Trigger value="styles" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                Styles
+              </Tabs.Trigger>
+            </Tabs.List>
 
-          {/* Settings */}
-          <section className="flex flex-col gap-6">
-            <div>
-              <div className="flex justify-between mb-2">
-                <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Kích thước cọ</label>
-                <span className="text-slate-200 text-xs">{brushSize}px</span>
-              </div>
-              <input 
-                type="range" min="1" max="100" value={brushSize} 
-                onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
-            </div>
-            <div>
-              <div className="flex justify-between mb-2">
-                <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Độ trong suốt</label>
-                <span className="text-slate-200 text-xs">{Math.round(opacity * 100)}%</span>
-              </div>
-              <input 
-                type="range" min="0" max="1" step="0.1" value={opacity} 
-                onChange={(e) => setOpacity(parseFloat(e.target.value))}
-                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
-            </div>
-          </section>
+            <Tabs.Content value="layers" className="flex-1 overflow-y-auto p-4">
+              <Reorder.Group axis="y" values={layers} onReorder={reorderLayers} className="space-y-2">
+                {layers.map((obj) => (
+                  <Reorder.Item 
+                    key={obj.name || Math.random().toString()} 
+                    value={obj}
+                    className={`flex items-center gap-3 p-3 rounded-lg border transition-all cursor-grab active:cursor-grabbing ${activeObject === obj ? 'bg-indigo-600/20 border-indigo-500' : 'bg-slate-800 border-slate-700 hover:border-slate-600'}`}
+                    onClick={() => {
+                      fabricCanvas.current?.setActiveObject(obj);
+                      fabricCanvas.current?.renderAll();
+                    }}
+                  >
+                    <GripVertical className="w-4 h-4 text-slate-500" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-slate-200 text-xs font-medium truncate">{obj.name || 'Unnamed Layer'}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); toggleLayerVisibility(obj); }}
+                        className={`p-1.5 rounded hover:bg-slate-700 transition-colors ${obj.visible ? 'text-slate-400' : 'text-rose-500'}`}
+                      >
+                        {obj.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); toggleLayerLock(obj); }}
+                        className={`p-1.5 rounded hover:bg-slate-700 transition-colors ${obj.lockMovementX ? 'text-amber-500' : 'text-slate-400'}`}
+                      >
+                        {obj.lockMovementX ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </Reorder.Item>
+                ))}
+              </Reorder.Group>
+            </Tabs.Content>
 
-          {/* Filters */}
-          <section>
-            <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Bộ lọc (Chọn ảnh)</h3>
-            <div className="grid grid-cols-2 gap-2">
-              <FilterButton onClick={() => applyFilter('grayscale')} icon={<Layers className="w-4 h-4" />} label="Xám" />
-              <FilterButton onClick={() => applyFilter('sepia')} icon={<ImageIcon className="w-4 h-4" />} label="Sepia" />
-              <FilterButton onClick={() => applyFilter('invert')} icon={<RefreshCw className="w-4 h-4" />} label="Đảo ngược" />
-              <FilterButton onClick={() => applyFilter('brightness')} icon={<Sun className="w-4 h-4" />} label="Sáng" />
-              <FilterButton onClick={() => applyFilter('contrast')} icon={<Contrast className="w-4 h-4" />} label="Tương phản" />
-              <FilterButton onClick={() => applyFilter('blur')} icon={<Wind className="w-4 h-4" />} label="Mờ" />
-            </div>
-          </section>
+            <Tabs.Content value="properties" className="flex-1 overflow-y-auto p-6 space-y-8">
+              {/* Colors */}
+              <section>
+                <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Màu sắc</h3>
+                <div className="grid grid-cols-6 gap-2">
+                  {['#000000', '#ffffff', '#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7', '#ec4899', '#64748b', '#475569'].map(c => (
+                    <button 
+                      key={c}
+                      onClick={() => setColor(c)}
+                      className={`w-8 h-8 rounded-full border-2 transition-all ${color === c ? 'border-white scale-110' : 'border-transparent hover:scale-105'}`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                  <input 
+                    type="color" 
+                    value={color} 
+                    onChange={(e) => setColor(e.target.value)}
+                    className="w-8 h-8 rounded-full overflow-hidden border-none p-0 cursor-pointer"
+                  />
+                </div>
+              </section>
+
+              {/* Settings */}
+              <section className="flex flex-col gap-6">
+                <div>
+                  <div className="flex justify-between mb-2">
+                    <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Kích thước cọ</label>
+                    <span className="text-slate-200 text-xs">{brushSize}px</span>
+                  </div>
+                  <Slider.Root 
+                    className="relative flex items-center select-none touch-none w-full h-5"
+                    value={[brushSize]}
+                    onValueChange={([v]) => setBrushSize(v)}
+                    max={100}
+                    step={1}
+                  >
+                    <Slider.Track className="bg-slate-800 relative grow rounded-full h-[3px]">
+                      <Slider.Range className="absolute bg-indigo-500 rounded-full h-full" />
+                    </Slider.Track>
+                    <Slider.Thumb className="block w-4 h-4 bg-white shadow-lg rounded-full hover:scale-110 focus:outline-none transition-transform" />
+                  </Slider.Root>
+                </div>
+                <div>
+                  <div className="flex justify-between mb-2">
+                    <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Độ trong suốt</label>
+                    <span className="text-slate-200 text-xs">{Math.round(opacity * 100)}%</span>
+                  </div>
+                  <Slider.Root 
+                    className="relative flex items-center select-none touch-none w-full h-5"
+                    value={[opacity]}
+                    onValueChange={([v]) => setOpacity(v)}
+                    max={1}
+                    step={0.01}
+                  >
+                    <Slider.Track className="bg-slate-800 relative grow rounded-full h-[3px]">
+                      <Slider.Range className="absolute bg-indigo-500 rounded-full h-full" />
+                    </Slider.Track>
+                    <Slider.Thumb className="block w-4 h-4 bg-white shadow-lg rounded-full hover:scale-110 focus:outline-none transition-transform" />
+                  </Slider.Root>
+                </div>
+              </section>
+
+              {/* Filters */}
+              <section>
+                <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Bộ lọc (Chọn ảnh)</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  <FilterButton onClick={() => applyFilter('grayscale')} icon={<Layers className="w-4 h-4" />} label="Xám" />
+                  <FilterButton onClick={() => applyFilter('sepia')} icon={<ImageIcon className="w-4 h-4" />} label="Sepia" />
+                  <FilterButton onClick={() => applyFilter('invert')} icon={<RefreshCw className="w-4 h-4" />} label="Đảo ngược" />
+                  <FilterButton onClick={() => applyFilter('brightness')} icon={<Sun className="w-4 h-4" />} label="Sáng" />
+                  <FilterButton onClick={() => applyFilter('contrast')} icon={<Contrast className="w-4 h-4" />} label="Tương phản" />
+                  <FilterButton onClick={() => applyFilter('blur')} icon={<Wind className="w-4 h-4" />} label="Mờ" />
+                </div>
+              </section>
+            </Tabs.Content>
+
+            <Tabs.Content value="styles" className="flex-1 overflow-y-auto p-6 space-y-8">
+              {activeObject ? (
+                <>
+                  <section>
+                    <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4 block">Chế độ hòa trộn</label>
+                    <Select.Root 
+                      value={activeObject.get('globalCompositeOperation') || 'source-over'}
+                      onValueChange={(v) => updateLayerStyle('blendMode', v)}
+                    >
+                      <Select.Trigger className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition-all">
+                        <Select.Value />
+                        <ChevronDown className="w-4 h-4 text-slate-500" />
+                      </Select.Trigger>
+                      <Select.Portal>
+                        <Select.Content className="bg-slate-800 border border-slate-700 rounded-lg shadow-2xl overflow-hidden z-[100]">
+                          <Select.Viewport className="p-1">
+                            {[
+                              { label: 'Normal', value: 'source-over' },
+                              { label: 'Multiply', value: 'multiply' },
+                              { label: 'Screen', value: 'screen' },
+                              { label: 'Overlay', value: 'overlay' },
+                              { label: 'Darken', value: 'darken' },
+                              { label: 'Lighten', value: 'lighten' },
+                              { label: 'Color Dodge', value: 'color-dodge' },
+                              { label: 'Color Burn', value: 'color-burn' },
+                              { label: 'Hard Light', value: 'hard-light' },
+                              { label: 'Soft Light', value: 'soft-light' },
+                              { label: 'Difference', value: 'difference' },
+                              { label: 'Exclusion', value: 'exclusion' },
+                            ].map((opt) => (
+                              <Select.Item key={opt.value} value={opt.value} className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer focus:outline-none">
+                                <Select.ItemText>{opt.label}</Select.ItemText>
+                              </Select.Item>
+                            ))}
+                          </Select.Viewport>
+                        </Select.Content>
+                      </Select.Portal>
+                    </Select.Root>
+                  </section>
+
+                  <section className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Viền (Stroke)</label>
+                      <Switch.Root 
+                        checked={!!activeObject.stroke}
+                        onCheckedChange={(checked) => updateLayerStyle('stroke', checked ? color : null)}
+                        className="w-10 h-5 bg-slate-800 rounded-full relative data-[state=checked]:bg-indigo-600 transition-colors"
+                      >
+                        <Switch.Thumb className="block w-4 h-4 bg-white rounded-full transition-transform translate-x-0.5 data-[state=checked]:translate-x-[22px]" />
+                      </Switch.Root>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">Đổ bóng (Shadow)</label>
+                      <Switch.Root 
+                        checked={!!activeObject.shadow}
+                        onCheckedChange={(checked) => updateLayerStyle('shadow', checked)}
+                        className="w-10 h-5 bg-slate-800 rounded-full relative data-[state=checked]:bg-indigo-600 transition-colors"
+                      >
+                        <Switch.Thumb className="block w-4 h-4 bg-white rounded-full transition-transform translate-x-0.5 data-[state=checked]:translate-x-[22px]" />
+                      </Switch.Root>
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                  <Palette className="w-12 h-12 text-slate-700 mb-4" />
+                  <p className="text-slate-500 text-sm">Chọn một layer để tùy chỉnh Layer Style</p>
+                </div>
+              )}
+            </Tabs.Content>
+          </Tabs.Root>
         </div>
       </div>
+
+      {/* Export Dialog */}
+      <Dialog.Root open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[100]" />
+          <Dialog.Content className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl z-[101] focus:outline-none">
+            <Dialog.Title className="text-xl font-bold text-slate-200 mb-6 flex items-center gap-3">
+              <Download className="w-5 h-5 text-emerald-500" />
+              Tùy chọn xuất ảnh
+            </Dialog.Title>
+
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Định dạng</label>
+                  <Select.Root 
+                    value={exportSettings.format}
+                    onValueChange={(v: any) => setExportSettings(prev => ({ ...prev, format: v }))}
+                  >
+                    <Select.Trigger className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200">
+                      <Select.Value />
+                      <ChevronDown className="w-4 h-4" />
+                    </Select.Trigger>
+                    <Select.Portal>
+                      <Select.Content className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-[110]">
+                        <Select.Viewport className="p-1">
+                          <Select.Item value="png" className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer">
+                            <Select.ItemText>PNG</Select.ItemText>
+                          </Select.Item>
+                          <Select.Item value="jpeg" className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer">
+                            <Select.ItemText>JPG</Select.ItemText>
+                          </Select.Item>
+                        </Select.Viewport>
+                      </Select.Content>
+                    </Select.Portal>
+                  </Select.Root>
+                </div>
+                <div>
+                  <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">DPI</label>
+                  <Select.Root 
+                    value={exportSettings.dpi.toString()}
+                    onValueChange={(v) => setExportSettings(prev => ({ ...prev, dpi: parseInt(v) }))}
+                  >
+                    <Select.Trigger className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200">
+                      <Select.Value />
+                      <ChevronDown className="w-4 h-4" />
+                    </Select.Trigger>
+                    <Select.Portal>
+                      <Select.Content className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-[110]">
+                        <Select.Viewport className="p-1">
+                          {[72, 150, 300, 600].map(d => (
+                            <Select.Item key={d} value={d.toString()} className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer">
+                              <Select.ItemText>{d} DPI</Select.ItemText>
+                            </Select.Item>
+                          ))}
+                        </Select.Viewport>
+                      </Select.Content>
+                    </Select.Portal>
+                  </Select.Root>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <label className="text-slate-400 text-xs font-bold uppercase tracking-wider block">Kích thước (px)</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] text-slate-500 uppercase font-bold">Rộng</span>
+                    <input 
+                      type="number" 
+                      value={exportSettings.width}
+                      onChange={(e) => setExportSettings(prev => ({ ...prev, width: parseInt(e.target.value) }))}
+                      className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] text-slate-500 uppercase font-bold">Cao</span>
+                    <input 
+                      type="number" 
+                      value={exportSettings.height}
+                      onChange={(e) => setExportSettings(prev => ({ ...prev, height: parseInt(e.target.value) }))}
+                      className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
+                    />
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setExportSettings(prev => ({ ...prev, width: originalSize.width, height: originalSize.height }))}
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-widest flex items-center gap-1.5"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                  Khôi phục kích thước gốc
+                </button>
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <Dialog.Close asChild>
+                  <button className="flex-1 px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-2xl font-bold transition-all">
+                    Hủy
+                  </button>
+                </Dialog.Close>
+                <button 
+                  onClick={handleExport}
+                  className="flex-1 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg shadow-emerald-500/20 transition-all"
+                >
+                  Tải về ngay
+                </button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       <input 
         type="file" 
         ref={insertImageInputRef}
@@ -660,4 +1037,8 @@ const FilterButton = ({ onClick, icon, label }: { onClick: () => void, icon: Rea
 
 const RefreshCw = ({ className }: { className?: string }) => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+);
+
+const ChevronDown = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m6 9 6 6 6-6"/></svg>
 );
