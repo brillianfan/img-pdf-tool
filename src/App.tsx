@@ -29,6 +29,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
+import { PhotoEditor } from './components/PhotoEditor';
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -41,7 +42,8 @@ type ToolAction =
   | 'CONVERT_IMAGE' 
   | 'MERGE_PDF' 
   | 'SPLIT_PDF' 
-  | 'DELETE_PAGES';
+  | 'DELETE_PAGES'
+  | 'PHOTO_EDITOR';
 
 interface Tool {
   id: ToolAction;
@@ -112,6 +114,13 @@ const TOOLS: Tool[] = [
     description: 'Loại bỏ các trang không mong muốn khỏi PDF',
     accept: '.pdf'
   },
+  { 
+    id: 'PHOTO_EDITOR', 
+    title: 'Chỉnh sửa ảnh (Photoshop)', 
+    icon: <Scissors className="w-10 h-10 text-slate-700" />, 
+    description: 'Cắt, vẽ, thêm chữ, bộ lọc và AI cho ảnh',
+    accept: 'image/*,.heic,.heif,.jfif'
+  }
 ];
 
 export default function App() {
@@ -124,6 +133,7 @@ export default function App() {
   const [showSupport, setShowSupport] = useState(false);
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
+  const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -545,6 +555,13 @@ export default function App() {
           const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           downloadBlob(blob, `${file.name.replace('.pdf', '')}_compressed.pdf`);
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
+          break;
+        }
+
+        case 'PHOTO_EDITOR': {
+          const file = processedFiles[0];
+          setPhotoEditorFile(file);
+          setStatus(null);
           break;
         }
 
@@ -1014,6 +1031,17 @@ export default function App() {
         accept={activeTool ? TOOLS.find(t => t.id === activeTool)?.accept : '*'}
         onChange={onFileSelect}
       />
+
+      {photoEditorFile && (
+        <PhotoEditor 
+          file={photoEditorFile} 
+          onClose={() => setPhotoEditorFile(null)}
+          onSave={(blob) => {
+            downloadBlob(blob, 'edited-image.png');
+            setPhotoEditorFile(null);
+          }}
+        />
+      )}
     </div>
   );
 }
