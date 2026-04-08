@@ -510,7 +510,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     const multiplier = exportSettings.width / canvas.getWidth();
     
     const dataUrl = canvas.toDataURL({
-      format: exportSettings.format,
+      format: exportSettings.format === 'jpeg' ? 'jpeg' : 'png',
       quality: exportSettings.quality,
       multiplier: multiplier,
     });
@@ -519,10 +519,63 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.setZoom(currentZoom);
     if (currentVpt) canvas.setViewportTransform(currentVpt);
 
+    // Manually inject DPI metadata as browsers default to 96 DPI
+    const parts = dataUrl.split(',');
+    const body = atob(parts[1]);
+    const bytes = new Uint8Array(body.length);
+    for (let i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i);
+
+    let finalBlob: Blob;
+
+    if (exportSettings.format === 'jpeg') {
+      // Inject JFIF DPI (Density units and X/Y density)
+      for (let i = 0; i < bytes.length - 1; i++) {
+        if (bytes[i] === 0xff && bytes[i + 1] === 0xe0) {
+          bytes[i + 11] = 1; // dots per inch
+          bytes[i + 12] = (exportSettings.dpi >> 8) & 0xff;
+          bytes[i + 13] = exportSettings.dpi & 0xff;
+          bytes[i + 14] = (exportSettings.dpi >> 8) & 0xff;
+          bytes[i + 15] = exportSettings.dpi & 0xff;
+          break;
+        }
+      }
+      finalBlob = new Blob([bytes], { type: 'image/jpeg' });
+    } else {
+      // Inject PNG pHYs chunk (pixels per meter)
+      const ppm = Math.round(exportSettings.dpi / 0.0254);
+      const pHYs = new Uint8Array(21);
+      pHYs[0] = 0; pHYs[1] = 0; pHYs[2] = 0; pHYs[3] = 9; // Length: 9 bytes
+      pHYs[4] = 112; pHYs[5] = 72; pHYs[6] = 89; pHYs[7] = 115; // 'pHYs'
+      pHYs[8] = (ppm >> 24) & 0xff; pHYs[9] = (ppm >> 16) & 0xff; pHYs[10] = (ppm >> 8) & 0xff; pHYs[11] = ppm & 0xff; // X
+      pHYs[12] = (ppm >> 24) & 0xff; pHYs[13] = (ppm >> 16) & 0xff; pHYs[14] = (ppm >> 8) & 0xff; pHYs[15] = ppm & 0xff; // Y
+      pHYs[16] = 1; // Unit: meter
+      
+      // CRC32 for pHYs chunk (type + data)
+      const crcData = pHYs.subarray(4, 17);
+      let crc = 0xffffffff;
+      for (let i = 0; i < crcData.length; i++) {
+        let c = (crc ^ crcData[i]) & 0xff;
+        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        crc = (crc >>> 8) ^ c;
+      }
+      crc = (crc ^ 0xffffffff) >>> 0;
+      pHYs[17] = (crc >> 24) & 0xff; pHYs[18] = (crc >> 16) & 0xff; pHYs[19] = (crc >> 8) & 0xff; pHYs[20] = crc & 0xff;
+
+      // Insert pHYs chunk right after IHDR chunk (offset 33)
+      const newBytes = new Uint8Array(bytes.length + 21);
+      newBytes.set(bytes.subarray(0, 33));
+      newBytes.set(pHYs, 33);
+      newBytes.set(bytes.subarray(33), 54);
+      finalBlob = new Blob([newBytes], { type: 'image/png' });
+    }
+
+    const finalUrl = URL.createObjectURL(finalBlob);
     const link = document.createElement('a');
     link.download = `edited-image.${exportSettings.format}`;
-    link.href = dataUrl;
+    link.href = finalUrl;
     link.click();
+    
+    setTimeout(() => URL.revokeObjectURL(finalUrl), 1000);
     setShowExportDialog(false);
   };
 
