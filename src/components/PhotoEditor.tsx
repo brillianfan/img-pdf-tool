@@ -108,24 +108,38 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     reader.onload = (e) => {
       const url = e.target?.result as string;
       fabric.Image.fromURL(url).then((img) => {
-        setOriginalSize({ width: img.width!, height: img.height! });
-        setExportSettings(prev => ({ ...prev, width: img.width!, height: img.height! }));
+        const imgWidth = img.width!;
+        const imgHeight = img.height!;
+        setOriginalSize({ width: imgWidth, height: imgHeight });
+        setExportSettings(prev => ({ ...prev, width: imgWidth, height: imgHeight }));
         
-        const canvasWidth = canvas.getWidth();
-        const canvasHeight = canvas.getHeight();
-        const scale = Math.min(canvasWidth / img.width!, canvasHeight / img.height!, 1);
+        // Resize canvas to match image aspect ratio
+        const maxWidth = 800;
+        const maxHeight = 600;
+        let canvasWidth = maxWidth;
+        let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+
+        if (canvasHeight > maxHeight) {
+          canvasHeight = maxHeight;
+          canvasWidth = (imgWidth / imgHeight) * maxHeight;
+        }
+
+        canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+        
+        const scale = canvasWidth / imgWidth;
         
         img.set({
           scaleX: scale,
           scaleY: scale,
-          left: (canvasWidth - img.width! * scale) / 2,
-          top: (canvasHeight - img.height! * scale) / 2,
-          selectable: true,
-          name: 'Background'
+          left: 0,
+          top: 0,
+          selectable: false, // Background should usually be fixed
+          name: 'Background',
+          hoverCursor: 'default'
         });
         
         canvas.add(img);
-        canvas.setActiveObject(img);
+        canvas.sendObjectToBack(img);
         canvas.renderAll();
         updateLayers();
         saveHistory();
@@ -237,21 +251,35 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     reader.onload = (e) => {
       const url = e.target?.result as string;
       fabric.Image.fromURL(url).then((img) => {
-        const canvasWidth = canvas.getWidth();
-        const canvasHeight = canvas.getHeight();
-        const scale = Math.min(canvasWidth / img.width!, canvasHeight / img.height!, 1);
+        const imgWidth = img.width!;
+        const imgHeight = img.height!;
+        
+        const maxWidth = 800;
+        const maxHeight = 600;
+        let canvasWidth = maxWidth;
+        let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+
+        if (canvasHeight > maxHeight) {
+          canvasHeight = maxHeight;
+          canvasWidth = (imgWidth / imgHeight) * maxHeight;
+        }
+
+        canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+        
+        const scale = canvasWidth / imgWidth;
         
         img.set({
           scaleX: scale,
           scaleY: scale,
-          left: (canvasWidth - img.width! * scale) / 2,
-          top: (canvasHeight - img.height! * scale) / 2,
-          selectable: true,
-          name: 'Background'
+          left: 0,
+          top: 0,
+          selectable: false,
+          name: 'Background',
+          hoverCursor: 'default'
         });
         
         canvas.add(img);
-        canvas.setActiveObject(img);
+        canvas.sendObjectToBack(img);
         canvas.renderAll();
         setHistory([]);
         setHistoryIndex(-1);
@@ -960,7 +988,11 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                     <input 
                       type="number" 
                       value={exportSettings.width}
-                      onChange={(e) => setExportSettings(prev => ({ ...prev, width: parseInt(e.target.value) }))}
+                      onChange={(e) => {
+                        const w = parseInt(e.target.value) || 0;
+                        const h = Math.round(w * (originalSize.height / originalSize.width));
+                        setExportSettings(prev => ({ ...prev, width: w, height: h }));
+                      }}
                       className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
                     />
                   </div>
@@ -969,7 +1001,11 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                     <input 
                       type="number" 
                       value={exportSettings.height}
-                      onChange={(e) => setExportSettings(prev => ({ ...prev, height: parseInt(e.target.value) }))}
+                      onChange={(e) => {
+                        const h = parseInt(e.target.value) || 0;
+                        const w = Math.round(h * (originalSize.width / originalSize.height));
+                        setExportSettings(prev => ({ ...prev, width: w, height: h }));
+                      }}
                       className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
                     />
                   </div>
