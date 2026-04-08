@@ -23,7 +23,9 @@ import {
   X,
   Check,
   ChevronRight,
-  ChevronLeft
+  ChevronLeft,
+  ImagePlus,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Cropper, ReactCropperElement } from 'react-cropper';
@@ -43,6 +45,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvas = useRef<fabric.Canvas | null>(null);
   const cropperRef = useRef<ReactCropperElement>(null);
+  const insertImageInputRef = useRef<HTMLInputElement>(null);
   
   const [mode, setMode] = useState<EditorMode>('select');
   const [color, setColor] = useState('#000000');
@@ -129,6 +132,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     }
   }, [mode, color, brushSize]);
 
+  useEffect(() => {
+    const canvas = fabricCanvas.current;
+    if (!canvas || !activeObject) return;
+    
+    activeObject.set('opacity', opacity);
+    canvas.renderAll();
+  }, [opacity]);
+
   const saveHistory = useCallback(() => {
     const canvas = fabricCanvas.current;
     if (!canvas) return;
@@ -159,6 +170,75 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         setHistoryIndex(nextIndex);
       });
     }
+  };
+
+  const resetCanvas = () => {
+    const canvas = fabricCanvas.current;
+    if (!canvas) return;
+    
+    canvas.clear();
+    canvas.backgroundColor = '#ffffff';
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const url = e.target?.result as string;
+      fabric.Image.fromURL(url).then((img) => {
+        const canvasWidth = canvas.getWidth();
+        const canvasHeight = canvas.getHeight();
+        const scale = Math.min(canvasWidth / img.width!, canvasHeight / img.height!, 1);
+        
+        img.set({
+          scaleX: scale,
+          scaleY: scale,
+          left: (canvasWidth - img.width! * scale) / 2,
+          top: (canvasHeight - img.height! * scale) / 2,
+          selectable: true,
+        });
+        
+        canvas.add(img);
+        canvas.setActiveObject(img);
+        canvas.renderAll();
+        setHistory([]);
+        setHistoryIndex(-1);
+        saveHistory();
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleInsertImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (f) => {
+      const url = f.target?.result as string;
+      fabric.Image.fromURL(url).then((img) => {
+        const canvas = fabricCanvas.current;
+        if (!canvas) return;
+
+        // Scale down if too large
+        const maxDim = 300;
+        if (img.width! > maxDim || img.height! > maxDim) {
+          const scale = maxDim / Math.max(img.width!, img.height!);
+          img.scale(scale);
+        }
+
+        img.set({
+          left: 100,
+          top: 100,
+          selectable: true,
+        });
+
+        canvas.add(img);
+        canvas.setActiveObject(img);
+        canvas.renderAll();
+        saveHistory();
+      });
+    };
+    reader.readAsDataURL(file);
+    // Reset input
+    e.target.value = '';
   };
 
   const addText = () => {
@@ -326,6 +406,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
 
         <div className="flex items-center gap-2">
           <button 
+            onClick={resetCanvas}
+            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-all"
+            title="Khôi phục ảnh gốc"
+          >
+            <RotateCcw className="w-5 h-5" />
+          </button>
+          <div className="h-6 w-px bg-slate-800 mx-2" />
+          <button 
             onClick={undo} 
             disabled={historyIndex <= 0}
             className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 disabled:opacity-30 transition-all"
@@ -371,6 +459,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           <ToolButton active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
           <ToolButton active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
           <div className="w-8 h-px bg-slate-800 my-2" />
+          <ToolButton active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Chèn ảnh" />
           <ToolButton active={false} onClick={addText} icon={<Type />} label="Chữ" />
           <ToolButton active={mode === 'rect'} onClick={() => addShape('rect')} icon={<Square />} label="Vuông" />
           <ToolButton active={mode === 'circle'} onClick={() => addShape('circle')} icon={<Circle />} label="Tròn" />
@@ -535,6 +624,13 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           </section>
         </div>
       </div>
+      <input 
+        type="file" 
+        ref={insertImageInputRef}
+        className="hidden"
+        accept="image/*"
+        onChange={handleInsertImage}
+      />
     </div>
   );
 };

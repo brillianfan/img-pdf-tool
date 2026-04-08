@@ -22,7 +22,8 @@ import {
   Info,
   ArrowUp,
   ArrowDown,
-  GripVertical
+  GripVertical,
+  Facebook
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -712,7 +713,7 @@ export default function App() {
           transition={{ duration: 0.6 }}
         >
           <h1 className="text-5xl font-bold tracking-tight mb-4 text-slate-800">
-            Tool Văn Phòng - v.2.0
+            Tool Văn Phòng - v.2.0.2
           </h1>
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Chọn chất lượng nén, DPI và kéo thả tệp để xử lý
@@ -1006,8 +1007,22 @@ export default function App() {
                   </div>
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Phiên bản</div>
-                    <div className="text-slate-700 font-bold">v2.0.1 - Pro Edition</div>
+                    <div className="text-slate-700 font-bold">v2.0.2 - Pro Edition</div>
                   </div>
+                  <a 
+                    href="https://fb.com/minhtri.pham.1997" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 bg-blue-50 p-4 rounded-xl text-left hover:bg-blue-100 transition-colors group"
+                  >
+                    <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white group-hover:scale-110 transition-transform">
+                      <Facebook className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-0.5">Facebook</div>
+                      <div className="text-blue-700 font-bold">minhtri.pham.1997</div>
+                    </div>
+                  </a>
                 </div>
 
                 <button 
