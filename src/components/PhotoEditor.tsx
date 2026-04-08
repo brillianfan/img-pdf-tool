@@ -33,7 +33,10 @@ import {
   Settings,
   Maximize2,
   Palette,
-  GripVertical
+  GripVertical,
+  ZoomIn,
+  ZoomOut,
+  Maximize
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { Cropper, ReactCropperElement } from 'react-cropper';
@@ -82,6 +85,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   const [layers, setLayers] = useState<fabric.Object[]>([]);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [originalSize, setOriginalSize] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState(1);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
     format: 'png',
     quality: 0.9,
@@ -162,6 +166,19 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.on('object:removed', () => {
       saveHistory();
       updateLayers();
+    });
+
+    // Zoom on wheel
+    canvas.on('mouse:wheel', (opt) => {
+      const delta = opt.e.deltaY;
+      let zoomLevel = canvas.getZoom();
+      zoomLevel *= 0.999 ** delta;
+      if (zoomLevel > 20) zoomLevel = 20;
+      if (zoomLevel < 0.01) zoomLevel = 0.01;
+      canvas.zoomToPoint(new fabric.Point(opt.e.offsetX, opt.e.offsetY), zoomLevel);
+      setZoom(zoomLevel);
+      opt.e.preventDefault();
+      opt.e.stopPropagation();
     });
 
     return () => {
@@ -481,6 +498,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     const canvas = fabricCanvas.current;
     if (!canvas) return;
 
+    // Save current zoom and viewport transform
+    const currentZoom = canvas.getZoom();
+    const currentVpt = canvas.viewportTransform;
+
+    // Reset zoom for export to ensure correct dimensions
+    canvas.setZoom(1);
+    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+
     // Calculate multiplier based on requested width vs current canvas width
     const multiplier = exportSettings.width / canvas.getWidth();
     
@@ -489,6 +514,10 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       quality: exportSettings.quality,
       multiplier: multiplier,
     });
+
+    // Restore zoom and viewport transform
+    canvas.setZoom(currentZoom);
+    if (currentVpt) canvas.setViewportTransform(currentVpt);
 
     const link = document.createElement('a');
     link.download = `edited-image.${exportSettings.format}`;
@@ -555,6 +584,27 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.renderAll();
     saveHistory();
     updateLayers();
+  };
+
+  const handleZoom = (type: 'in' | 'out' | 'reset') => {
+    const canvas = fabricCanvas.current;
+    if (!canvas) return;
+
+    let newZoom = canvas.getZoom();
+    if (type === 'in') newZoom *= 1.2;
+    else if (type === 'out') newZoom /= 1.2;
+    else newZoom = 1;
+
+    if (newZoom > 20) newZoom = 20;
+    if (newZoom < 0.01) newZoom = 0.01;
+
+    if (type === 'reset') {
+      canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      canvas.setZoom(1);
+    } else {
+      canvas.zoomToPoint(new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2), newZoom);
+    }
+    setZoom(newZoom);
   };
 
   return (
@@ -633,6 +683,41 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         <div className="flex-1 bg-slate-950 flex items-center justify-center p-8 relative overflow-hidden">
           <div className="bg-white shadow-2xl rounded-sm overflow-hidden border border-slate-800">
             <canvas ref={canvasRef} />
+          </div>
+
+          {/* Zoom Controls */}
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-slate-900/80 backdrop-blur-md border border-slate-800 p-1.5 rounded-full shadow-2xl z-20">
+            <button 
+              onClick={() => handleZoom('out')}
+              className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors"
+              title="Zoom Out"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <div className="h-4 w-px bg-slate-800 mx-1" />
+            <button 
+              onClick={() => handleZoom('reset')}
+              className="px-3 py-1 hover:bg-slate-800 rounded-full text-slate-200 text-xs font-bold transition-colors"
+              title="Reset Zoom"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <div className="h-4 w-px bg-slate-800 mx-1" />
+            <button 
+              onClick={() => handleZoom('in')}
+              className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors"
+              title="Zoom In"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <div className="h-4 w-px bg-slate-800 mx-1" />
+            <button 
+              onClick={() => handleZoom('reset')}
+              className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors"
+              title="Fit to Screen"
+            >
+              <Maximize className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Crop Overlay */}
