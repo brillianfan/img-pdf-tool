@@ -48,6 +48,8 @@ import * as Dialog from '@radix-ui/react-dialog';
 import * as Select from '@radix-ui/react-select';
 import * as Slider from '@radix-ui/react-slider';
 import * as Switch from '@radix-ui/react-switch';
+import heic2any from 'heic2any';
+import UTIF from 'utif';
 
 interface PhotoEditorProps {
   file: File;
@@ -94,6 +96,36 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     height: 600
   });
 
+  const processImageFile = async (imageFile: File): Promise<string> => {
+    const extension = imageFile.name.split('.').pop()?.toLowerCase();
+    
+    if (extension === 'heic' || extension === 'heif') {
+      const blob = await heic2any({ blob: imageFile, toType: 'image/jpeg' });
+      const resultBlob = Array.isArray(blob) ? blob[0] : blob;
+      return URL.createObjectURL(resultBlob);
+    }
+    
+    if (extension === 'tif' || extension === 'tiff') {
+      const arrayBuffer = await imageFile.arrayBuffer();
+      const ifds = UTIF.decode(arrayBuffer);
+      UTIF.decodeImage(arrayBuffer, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const canvas = document.createElement('canvas');
+      canvas.width = ifds[0].width;
+      canvas.height = ifds[0].height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const imgData = ctx.createImageData(canvas.width, canvas.height);
+        imgData.data.set(rgba);
+        ctx.putImageData(imgData, 0, 0);
+        return canvas.toDataURL('image/png');
+      }
+    }
+
+    // For AVIF, JFIF, and others, try native loading first
+    return URL.createObjectURL(imageFile);
+  };
+
   // Initialize Canvas
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -108,48 +140,52 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     fabricCanvas.current = canvas;
 
     // Load initial image
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const url = e.target?.result as string;
-      fabric.Image.fromURL(url).then((img) => {
-        const imgWidth = img.width!;
-        const imgHeight = img.height!;
-        setOriginalSize({ width: imgWidth, height: imgHeight });
-        setExportSettings(prev => ({ ...prev, width: imgWidth, height: imgHeight }));
-        
-        // Resize canvas to match image aspect ratio
-        const maxWidth = 800;
-        const maxHeight = 600;
-        let canvasWidth = maxWidth;
-        let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+    const initImage = async () => {
+      try {
+        const url = await processImageFile(file);
+        fabric.Image.fromURL(url).then((img) => {
+          const imgWidth = img.width!;
+          const imgHeight = img.height!;
+          setOriginalSize({ width: imgWidth, height: imgHeight });
+          setExportSettings(prev => ({ ...prev, width: imgWidth, height: imgHeight }));
+          
+          // Resize canvas to match image aspect ratio
+          const maxWidth = 800;
+          const maxHeight = 600;
+          let canvasWidth = maxWidth;
+          let canvasHeight = (imgHeight / imgWidth) * maxWidth;
 
-        if (canvasHeight > maxHeight) {
-          canvasHeight = maxHeight;
-          canvasWidth = (imgWidth / imgHeight) * maxHeight;
-        }
+          if (canvasHeight > maxHeight) {
+            canvasHeight = maxHeight;
+            canvasWidth = (imgWidth / imgHeight) * maxHeight;
+          }
 
-        canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
-        
-        const scale = canvasWidth / imgWidth;
-        
-        img.set({
-          scaleX: scale,
-          scaleY: scale,
-          left: 0,
-          top: 0,
-          selectable: false, // Background should usually be fixed
-          name: 'Background',
-          hoverCursor: 'default'
+          canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+          
+          const scale = canvasWidth / imgWidth;
+          
+          img.set({
+            scaleX: scale,
+            scaleY: scale,
+            left: 0,
+            top: 0,
+            selectable: false, // Background should usually be fixed
+            name: 'Background',
+            hoverCursor: 'default'
+          });
+          
+          canvas.add(img);
+          canvas.sendObjectToBack(img);
+          canvas.renderAll();
+          updateLayers();
+          saveHistory();
         });
-        
-        canvas.add(img);
-        canvas.sendObjectToBack(img);
-        canvas.renderAll();
-        updateLayers();
-        saveHistory();
-      });
+      } catch (err) {
+        console.error('Error processing initial image:', err);
+      }
     };
-    reader.readAsDataURL(file);
+
+    initImage();
 
     // Event Listeners
     canvas.on('selection:created', (e) => setActiveObject(e.selected?.[0] || null));
@@ -264,56 +300,59 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.clear();
     canvas.backgroundColor = '#ffffff';
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const url = e.target?.result as string;
-      fabric.Image.fromURL(url).then((img) => {
-        const imgWidth = img.width!;
-        const imgHeight = img.height!;
-        
-        const maxWidth = 800;
-        const maxHeight = 600;
-        let canvasWidth = maxWidth;
-        let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+    const resetImage = async () => {
+      try {
+        const url = await processImageFile(file);
+        fabric.Image.fromURL(url).then((img) => {
+          const imgWidth = img.width!;
+          const imgHeight = img.height!;
+          
+          const maxWidth = 800;
+          const maxHeight = 600;
+          let canvasWidth = maxWidth;
+          let canvasHeight = (imgHeight / imgWidth) * maxWidth;
 
-        if (canvasHeight > maxHeight) {
-          canvasHeight = maxHeight;
-          canvasWidth = (imgWidth / imgHeight) * maxHeight;
-        }
+          if (canvasHeight > maxHeight) {
+            canvasHeight = maxHeight;
+            canvasWidth = (imgWidth / imgHeight) * maxHeight;
+          }
 
-        canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
-        
-        const scale = canvasWidth / imgWidth;
-        
-        img.set({
-          scaleX: scale,
-          scaleY: scale,
-          left: 0,
-          top: 0,
-          selectable: false,
-          name: 'Background',
-          hoverCursor: 'default'
+          canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+          
+          const scale = canvasWidth / imgWidth;
+          
+          img.set({
+            scaleX: scale,
+            scaleY: scale,
+            left: 0,
+            top: 0,
+            selectable: false,
+            name: 'Background',
+            hoverCursor: 'default'
+          });
+          
+          canvas.add(img);
+          canvas.sendObjectToBack(img);
+          canvas.renderAll();
+          setHistory([]);
+          setHistoryIndex(-1);
+          saveHistory();
+          updateLayers();
         });
-        
-        canvas.add(img);
-        canvas.sendObjectToBack(img);
-        canvas.renderAll();
-        setHistory([]);
-        setHistoryIndex(-1);
-        saveHistory();
-        updateLayers();
-      });
+      } catch (err) {
+        console.error('Error resetting canvas:', err);
+      }
     };
-    reader.readAsDataURL(file);
+
+    resetImage();
   };
 
-  const handleInsertImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInsertImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (f) => {
-      const url = f.target?.result as string;
+    try {
+      const url = await processImageFile(file);
       fabric.Image.fromURL(url).then((img) => {
         const canvas = fabricCanvas.current;
         if (!canvas) return;
@@ -337,8 +376,9 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         saveHistory();
         updateLayers();
       });
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Error inserting image:', err);
+    }
     e.target.value = '';
   };
 
