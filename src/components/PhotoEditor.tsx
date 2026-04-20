@@ -50,6 +50,11 @@ import * as Slider from '@radix-ui/react-slider';
 import * as Switch from '@radix-ui/react-switch';
 import heic2any from 'heic2any';
 import UTIF from 'utif';
+import * as pdfjsLib from 'pdfjs-dist';
+import { PDFDocument } from 'pdf-lib';
+
+// Set up PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 interface PhotoEditorProps {
   file: File;
@@ -60,7 +65,7 @@ interface PhotoEditorProps {
 type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop';
 
 interface ExportSettings {
-  format: 'png' | 'jpeg';
+  format: 'png' | 'jpeg' | 'pdf';
   quality: number;
   dpi: number;
   width: number;
@@ -118,6 +123,21 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         const imgData = ctx.createImageData(canvas.width, canvas.height);
         imgData.data.set(rgba);
         ctx.putImageData(imgData, 0, 0);
+        return canvas.toDataURL('image/png');
+      }
+    }
+
+    if (extension === 'pdf') {
+      const arrayBuffer = await imageFile.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 3 }); // High scale for quality
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (context) {
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await page.render({ canvasContext: context, viewport } as any).promise;
         return canvas.toDataURL('image/png');
       }
     }
@@ -534,7 +554,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const canvas = fabricCanvas.current;
     if (!canvas) return;
 
@@ -559,59 +579,86 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     canvas.setZoom(currentZoom);
     if (currentVpt) canvas.setViewportTransform(currentVpt);
 
-    // Manually inject DPI metadata as browsers default to 96 DPI
-    const parts = dataUrl.split(',');
-    const body = atob(parts[1]);
-    const bytes = new Uint8Array(body.length);
-    for (let i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i);
-
     let finalBlob: Blob;
 
-    if (exportSettings.format === 'jpeg') {
-      // Inject JFIF DPI (Density units and X/Y density)
-      for (let i = 0; i < bytes.length - 1; i++) {
-        if (bytes[i] === 0xff && bytes[i + 1] === 0xe0) {
-          bytes[i + 11] = 1; // dots per inch
-          bytes[i + 12] = (exportSettings.dpi >> 8) & 0xff;
-          bytes[i + 13] = exportSettings.dpi & 0xff;
-          bytes[i + 14] = (exportSettings.dpi >> 8) & 0xff;
-          bytes[i + 15] = exportSettings.dpi & 0xff;
-          break;
-        }
-      }
-      finalBlob = new Blob([bytes], { type: 'image/jpeg' });
-    } else {
-      // Inject PNG pHYs chunk (pixels per meter)
-      const ppm = Math.round(exportSettings.dpi / 0.0254);
-      const pHYs = new Uint8Array(21);
-      pHYs[0] = 0; pHYs[1] = 0; pHYs[2] = 0; pHYs[3] = 9; // Length: 9 bytes
-      pHYs[4] = 112; pHYs[5] = 72; pHYs[6] = 89; pHYs[7] = 115; // 'pHYs'
-      pHYs[8] = (ppm >> 24) & 0xff; pHYs[9] = (ppm >> 16) & 0xff; pHYs[10] = (ppm >> 8) & 0xff; pHYs[11] = ppm & 0xff; // X
-      pHYs[12] = (ppm >> 24) & 0xff; pHYs[13] = (ppm >> 16) & 0xff; pHYs[14] = (ppm >> 8) & 0xff; pHYs[15] = ppm & 0xff; // Y
-      pHYs[16] = 1; // Unit: meter
+    if (exportSettings.format === 'pdf') {
+      const pdfDoc = await PDFDocument.create();
+      // In PDF-lib, dimensions are in points (1/72 inch). 
+      // We want to map current pixel dimensions to points based on the DPI setting if possible,
+      // but usually we just want the output PDF to contain the image at full size.
+      // 72 DPI is standard for points. So we scale the points.
+      const pageWidth = (exportSettings.width * 72) / exportSettings.dpi;
+      const pageHeight = (exportSettings.height * 72) / exportSettings.dpi;
       
-      // CRC32 for pHYs chunk (type + data)
-      const crcData = pHYs.subarray(4, 17);
-      let crc = 0xffffffff;
-      for (let i = 0; i < crcData.length; i++) {
-        let c = (crc ^ crcData[i]) & 0xff;
-        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-        crc = (crc >>> 8) ^ c;
-      }
-      crc = (crc ^ 0xffffffff) >>> 0;
-      pHYs[17] = (crc >> 24) & 0xff; pHYs[18] = (crc >> 16) & 0xff; pHYs[19] = (crc >> 8) & 0xff; pHYs[20] = crc & 0xff;
+      const page = pdfDoc.addPage([pageWidth, pageHeight]);
+      
+      const parts = dataUrl.split(',');
+      const imageBytes = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+      const embeddedImage = await pdfDoc.embedPng(imageBytes);
+      
+      page.drawImage(embeddedImage, {
+        x: 0,
+        y: 0,
+        width: pageWidth,
+        height: pageHeight,
+      });
+      
+      const pdfBytes = await pdfDoc.save();
+      finalBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+    } else {
+      // Manually inject DPI metadata as browsers default to 96 DPI
+      const parts = dataUrl.split(',');
+      const body = atob(parts[1]);
+      const bytes = new Uint8Array(body.length);
+      for (let i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i);
 
-      // Insert pHYs chunk right after IHDR chunk (offset 33)
-      const newBytes = new Uint8Array(bytes.length + 21);
-      newBytes.set(bytes.subarray(0, 33));
-      newBytes.set(pHYs, 33);
-      newBytes.set(bytes.subarray(33), 54);
-      finalBlob = new Blob([newBytes], { type: 'image/png' });
+      if (exportSettings.format === 'jpeg') {
+        // Inject JFIF DPI (Density units and X/Y density)
+        for (let i = 0; i < bytes.length - 1; i++) {
+          if (bytes[i] === 0xff && bytes[i + 1] === 0xe0) {
+            bytes[i + 11] = 1; // dots per inch
+            bytes[i + 12] = (exportSettings.dpi >> 8) & 0xff;
+            bytes[i + 13] = exportSettings.dpi & 0xff;
+            bytes[i + 14] = (exportSettings.dpi >> 8) & 0xff;
+            bytes[i + 15] = exportSettings.dpi & 0xff;
+            break;
+          }
+        }
+        finalBlob = new Blob([bytes], { type: 'image/jpeg' });
+      } else {
+        // Inject PNG pHYs chunk (pixels per meter)
+        const ppm = Math.round(exportSettings.dpi / 0.0254);
+        const pHYs = new Uint8Array(21);
+        pHYs[0] = 0; pHYs[1] = 0; pHYs[2] = 0; pHYs[3] = 9; // Length: 9 bytes
+        pHYs[4] = 112; pHYs[5] = 72; pHYs[6] = 89; pHYs[7] = 115; // 'pHYs'
+        pHYs[8] = (ppm >> 24) & 0xff; pHYs[9] = (ppm >> 16) & 0xff; pHYs[10] = (ppm >> 8) & 0xff; pHYs[11] = ppm & 0xff; // X
+        pHYs[12] = (ppm >> 24) & 0xff; pHYs[13] = (ppm >> 16) & 0xff; pHYs[14] = (ppm >> 8) & 0xff; pHYs[15] = ppm & 0xff; // Y
+        pHYs[16] = 1; // Unit: meter
+        
+        // CRC32 for pHYs chunk (type + data)
+        const crcData = pHYs.subarray(4, 17);
+        let crc = 0xffffffff;
+        for (let i = 0; i < crcData.length; i++) {
+          let c = (crc ^ crcData[i]) & 0xff;
+          for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+          crc = (crc >>> 8) ^ c;
+        }
+        crc = (crc ^ 0xffffffff) >>> 0;
+        pHYs[17] = (crc >> 24) & 0xff; pHYs[18] = (crc >> 16) & 0xff; pHYs[19] = (crc >> 8) & 0xff; pHYs[20] = crc & 0xff;
+
+        // Insert pHYs chunk right after IHDR chunk (offset 33)
+        const newBytes = new Uint8Array(bytes.length + 21);
+        newBytes.set(bytes.subarray(0, 33));
+        newBytes.set(pHYs, 33);
+        newBytes.set(bytes.subarray(33), 54);
+        finalBlob = new Blob([newBytes], { type: 'image/png' });
+      }
     }
 
     const finalUrl = URL.createObjectURL(finalBlob);
     const link = document.createElement('a');
-    link.download = `edited-image.${exportSettings.format}`;
+    const ext = exportSettings.format;
+    link.download = `edited-image.${ext}`;
     link.href = finalUrl;
     link.click();
     
@@ -1128,6 +1175,9 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                           <Select.Item value="jpeg" className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer">
                             <Select.ItemText>JPG</Select.ItemText>
                           </Select.Item>
+                          <Select.Item value="pdf" className="px-8 py-2 text-sm text-slate-300 hover:bg-indigo-600 hover:text-white rounded cursor-pointer">
+                            <Select.ItemText>PDF</Select.ItemText>
+                          </Select.Item>
                         </Select.Viewport>
                       </Select.Content>
                     </Select.Portal>
@@ -1219,7 +1269,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         type="file" 
         ref={insertImageInputRef}
         className="hidden"
-        accept="image/*"
+        accept="image/*,.heic,.heif,.jfif,.pdf"
         onChange={handleInsertImage}
       />
     </div>

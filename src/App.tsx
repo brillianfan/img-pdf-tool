@@ -120,7 +120,7 @@ const TOOLS: Tool[] = [
     title: 'Chỉnh sửa ảnh (Photoshop)', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Cắt, vẽ, thêm chữ, bộ lọc và AI cho ảnh',
-    accept: 'image/*,.heic,.heif,.jfif'
+    accept: 'image/*,.heic,.heif,.jfif,.pdf'
   }
 ];
 
