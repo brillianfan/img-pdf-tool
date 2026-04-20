@@ -31,7 +31,7 @@ import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { PhotoEditor } from './components/PhotoEditor';
-import AIOCRTool from './components/AIOCRTool';
+// Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -128,9 +128,8 @@ const TOOLS: Tool[] = [
     id: 'EXTRACT_TEXT_AI', 
     title: 'Trích xuất văn bản AI (OCR)', 
     icon: <Sparkles className="w-10 h-10 text-slate-700" />, 
-    description: 'Chuyển đổi hình ảnh và PDF thành văn bản bằng AI (Gemini)',
-    accept: 'image/*,.pdf,.heic,.heif',
-    multiple: true
+    description: 'Sử dụng ứng dụng AI để nhận diện văn bản từ hình ảnh và PDF',
+    accept: '*'
   }
 ];
 
@@ -145,7 +144,7 @@ export default function App() {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
   const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
-  const [aiOcrFiles, setAiOcrFiles] = useState<File[] | null>(null);
+  const [showLinkedApp, setShowLinkedApp] = useState(false);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -577,12 +576,6 @@ export default function App() {
           break;
         }
 
-        case 'EXTRACT_TEXT_AI': {
-          setAiOcrFiles(processedFiles);
-          setStatus(null);
-          break;
-        }
-
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
@@ -802,8 +795,12 @@ export default function App() {
               onDragLeave={() => setIsDragging(null)}
               onDrop={(e) => onDrop(e, tool.id)}
               onClick={() => {
-                setActiveTool(tool.id);
-                fileInputRef.current?.click();
+                if (tool.id === 'EXTRACT_TEXT_AI') {
+                  setShowLinkedApp(true);
+                } else {
+                  setActiveTool(tool.id);
+                  fileInputRef.current?.click();
+                }
               }}
               className={`group relative bg-[#F9F9F9] border border-slate-100 rounded-lg p-10 transition-all duration-300 cursor-pointer flex flex-col items-center text-center gap-6 hover:bg-white hover:shadow-lg hover:shadow-slate-200/50 ${
                 isDragging === tool.id 
@@ -1075,12 +1072,42 @@ export default function App() {
         />
       )}
 
-      {aiOcrFiles && (
-        <AIOCRTool 
-          files={aiOcrFiles} 
-          onClose={() => setAiOcrFiles(null)}
-        />
-      )}
+      {/* AI OCR Linked App Iframe Modal */}
+      <AnimatePresence>
+        {showLinkedApp && (
+          <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-10">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full h-full max-w-7xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-white">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-50 rounded-xl text-blue-600">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <h2 className="font-bold text-slate-800">Trích xuất văn bản AI (OCR)</h2>
+                </div>
+                <button 
+                  onClick={() => setShowLinkedApp(false)}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition-all"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <div className="flex-1 w-full bg-slate-50 relative">
+                <iframe 
+                  src="https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30" 
+                  className="w-full h-full border-none"
+                  title="AI OCR App"
+                  allow="camera; microphone; geolocation"
+                />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
