@@ -31,6 +31,7 @@ import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { PhotoEditor } from './components/PhotoEditor';
+import AIOCRTool from './components/AIOCRTool';
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -44,7 +45,8 @@ type ToolAction =
   | 'MERGE_PDF' 
   | 'SPLIT_PDF' 
   | 'DELETE_PAGES'
-  | 'PHOTO_EDITOR';
+  | 'PHOTO_EDITOR'
+  | 'EXTRACT_TEXT_AI';
 
 interface Tool {
   id: ToolAction;
@@ -121,6 +123,14 @@ const TOOLS: Tool[] = [
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Cắt, vẽ, thêm chữ, bộ lọc và AI cho ảnh',
     accept: 'image/*,.heic,.heif,.jfif,.pdf'
+  },
+  { 
+    id: 'EXTRACT_TEXT_AI', 
+    title: 'Trích xuất văn bản AI (OCR)', 
+    icon: <Sparkles className="w-10 h-10 text-slate-700" />, 
+    description: 'Chuyển đổi hình ảnh và PDF thành văn bản bằng AI (Gemini)',
+    accept: 'image/*,.pdf,.heic,.heif',
+    multiple: true
   }
 ];
 
@@ -135,6 +145,7 @@ export default function App() {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
   const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
+  const [aiOcrFiles, setAiOcrFiles] = useState<File[] | null>(null);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -562,6 +573,12 @@ export default function App() {
         case 'PHOTO_EDITOR': {
           const file = processedFiles[0];
           setPhotoEditorFile(file);
+          setStatus(null);
+          break;
+        }
+
+        case 'EXTRACT_TEXT_AI': {
+          setAiOcrFiles(processedFiles);
           setStatus(null);
           break;
         }
@@ -1055,6 +1072,13 @@ export default function App() {
             downloadBlob(blob, 'edited-image.png');
             setPhotoEditorFile(null);
           }}
+        />
+      )}
+
+      {aiOcrFiles && (
+        <AIOCRTool 
+          files={aiOcrFiles} 
+          onClose={() => setAiOcrFiles(null)}
         />
       )}
     </div>
