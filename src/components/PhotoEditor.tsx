@@ -96,10 +96,10 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   const [vpt, setVpt] = useState<number[]>([1, 0, 0, 1, 0, 0]);
   const [zoom, setZoom] = useState(1);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
-    format: 'png',
+    format: 'pdf',
     quality: 0.9,
     dpi: 300,
-    width: 2480, // A4 Portrait 300 DPI
+    width: 2480,
     height: 3508
   });
 
@@ -157,6 +157,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       height: 600,
       backgroundColor: '#ffffff',
       preserveObjectStacking: true,
+      enableRetinaScaling: false
     });
 
     fabricCanvas.current = canvas;
@@ -573,6 +574,12 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
       setCanvasSize({ width: canvasWidth, height: canvasHeight });
       canvas.backgroundColor = '#ffffff';
+
+      setExportSettings(prev => ({ 
+        ...prev, 
+        width: isLandscape ? 3508 : 2480, 
+        height: isLandscape ? 2480 : 3508 
+      }));
       
       const scaleX = canvasWidth / imgWidth;
       const scaleY = canvasHeight / imgHeight;
@@ -654,24 +661,31 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
 
     // Save current zoom and viewport transform
     const currentZoom = canvas.getZoom();
-    const currentVpt = canvas.viewportTransform;
+    const currentVpt = canvas.viewportTransform ? [...canvas.viewportTransform] : null;
 
     // Reset zoom for export to ensure correct dimensions
     canvas.setZoom(1);
     canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
 
-    // Calculate multiplier based on requested width vs current canvas width
+    // Ensure we capture everything including outside the current viewport
     const multiplier = exportSettings.width / canvas.getWidth();
     
+    // We want to capture the ENTIRE canvas area
     const dataUrl = canvas.toDataURL({
       format: exportSettings.format === 'jpeg' ? 'jpeg' : 'png',
       quality: exportSettings.quality,
       multiplier: multiplier,
+      left: 0,
+      top: 0,
+      width: canvas.getWidth(),
+      height: canvas.getHeight(),
+      enableRetinaScaling: false // Avoid confusion with device pixel ratio
     });
 
     // Restore zoom and viewport transform
     canvas.setZoom(currentZoom);
-    if (currentVpt) canvas.setViewportTransform(currentVpt);
+    if (currentVpt) canvas.setViewportTransform(currentVpt as any);
+    canvas.renderAll();
 
     let finalBlob: Blob;
 
@@ -842,16 +856,21 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     setVpt([...canvas.viewportTransform!]);
   };
 
-  const Ruler = ({ orientation, size, zoom, dpi, scale, offset }: { 
+  const Ruler = ({ orientation, size, zoom, offset }: { 
     orientation: 'horizontal' | 'vertical', 
     size: number, 
     zoom: number, 
-    dpi: number, 
-    scale: number,
     offset: number
   }) => {
     const isHorizontal = orientation === 'horizontal';
-    const pixelsPerCm = (dpi / 2.54) * scale * zoom;
+    
+    // Total physical size in CM for the canvas dimension
+    const isLandscape = canvasSize.width > canvasSize.height;
+    const totalCm = isHorizontal 
+      ? (isLandscape ? 29.7 : 21) 
+      : (isLandscape ? 21 : 29.7);
+    
+    const pixelsPerCm = (size / totalCm) * zoom;
     
     // Calculate visible range
     const startCm = Math.floor(-offset / pixelsPerCm);
@@ -984,7 +1003,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
 
         {/* Main Canvas Area */}
         <div className="flex-1 bg-slate-950 flex items-center justify-center p-8 relative overflow-hidden">
-          <div className="relative flex flex-col bg-slate-900 rounded-sm border border-slate-800 shadow-2xl p-1 pt-6 pl-6 overflow-hidden">
+          <div className="relative flex flex-col bg-slate-900 rounded-sm border border-slate-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] p-1 pt-6 pl-6 overflow-hidden">
             {/* Ruler Corner */}
             <div className="absolute top-0 left-0 w-6 h-6 bg-slate-900 border-r border-b border-slate-800 flex items-center justify-center z-10">
               <span className="text-[7px] text-slate-500 font-bold uppercase select-none">cm</span>
@@ -996,8 +1015,6 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                 orientation="horizontal" 
                 size={canvasSize.width} 
                 zoom={vpt[0]} 
-                dpi={exportSettings.dpi} 
-                scale={originalSize.width > 0 ? canvasSize.width / originalSize.width : 1}
                 offset={vpt[4]}
               />
             </div>
@@ -1008,8 +1025,6 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                 orientation="vertical" 
                 size={canvasSize.height} 
                 zoom={vpt[3]} 
-                dpi={exportSettings.dpi} 
-                scale={originalSize.height > 0 ? canvasSize.height / originalSize.height : 1}
                 offset={vpt[5]}
               />
             </div>
@@ -1381,7 +1396,19 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                   <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">DPI</label>
                   <Select.Root 
                     value={exportSettings.dpi.toString()}
-                    onValueChange={(v) => setExportSettings(prev => ({ ...prev, dpi: parseInt(v) }))}
+                    onValueChange={(v) => {
+                      const newDpi = parseInt(v);
+                      const isLat = canvasSize.width > canvasSize.height;
+                      // Recalculate A4 dimensions for new DPI
+                      const a4W = isLat ? 11.69 : 8.27; // inches
+                      const a4H = isLat ? 8.27 : 11.69; 
+                      setExportSettings(prev => ({ 
+                        ...prev, 
+                        dpi: newDpi,
+                        width: Math.round(a4W * newDpi),
+                        height: Math.round(a4H * newDpi)
+                      }));
+                    }}
                   >
                     <Select.Trigger className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200">
                       <Select.Value />
@@ -1412,7 +1439,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                       value={exportSettings.width}
                       onChange={(e) => {
                         const w = parseInt(e.target.value) || 0;
-                        const h = Math.round(w * (originalSize.height / originalSize.width));
+                        const h = Math.round(w * (canvasSize.height / canvasSize.width));
                         setExportSettings(prev => ({ ...prev, width: w, height: h }));
                       }}
                       className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
@@ -1425,7 +1452,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                       value={exportSettings.height}
                       onChange={(e) => {
                         const h = parseInt(e.target.value) || 0;
-                        const w = Math.round(h * (originalSize.width / originalSize.height));
+                        const w = Math.round(h * (canvasSize.width / canvasSize.height));
                         setExportSettings(prev => ({ ...prev, width: w, height: h }));
                       }}
                       className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 focus:border-indigo-500 outline-none"
@@ -1433,11 +1460,21 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                   </div>
                 </div>
                 <button 
-                  onClick={() => setExportSettings(prev => ({ ...prev, width: originalSize.width, height: originalSize.height }))}
+                  onClick={() => {
+                    const isLat = canvasSize.width > canvasSize.height;
+                    const a4W = isLat ? 11.69 : 8.27; // inches
+                    const a4H = isLat ? 8.27 : 11.69;
+                    const dpi = exportSettings.dpi;
+                    setExportSettings(prev => ({ 
+                      ...prev, 
+                      width: Math.round(a4W * dpi), 
+                      height: Math.round(a4H * dpi) 
+                    }));
+                  }}
                   className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-widest flex items-center gap-1.5"
                 >
                   <Maximize2 className="w-3 h-3" />
-                  Khôi phục kích thước gốc
+                  Khôi phục chuẩn A4
                 </button>
               </div>
 
