@@ -144,7 +144,6 @@ export default function App() {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
   const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
-  const [showLinkedApp, setShowLinkedApp] = useState(false);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -796,7 +795,7 @@ export default function App() {
               onDrop={(e) => onDrop(e, tool.id)}
               onClick={() => {
                 if (tool.id === 'EXTRACT_TEXT_AI') {
-                  setShowLinkedApp(true);
+                  window.open('https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30', '_blank');
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
@@ -1071,43 +1070,6 @@ export default function App() {
           }}
         />
       )}
-
-      {/* AI OCR Linked App Iframe Modal */}
-      <AnimatePresence>
-        {showLinkedApp && (
-          <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-10">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full h-full max-w-7xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col"
-            >
-              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-white">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-blue-50 rounded-xl text-blue-600">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <h2 className="font-bold text-slate-800">Trích xuất văn bản AI (OCR)</h2>
-                </div>
-                <button 
-                  onClick={() => setShowLinkedApp(false)}
-                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition-all"
-                >
-                  <X className="w-6 h-6" />
-                </button>
-              </div>
-              <div className="flex-1 w-full bg-slate-50 relative">
-                <iframe 
-                  src="https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30" 
-                  className="w-full h-full border-none"
-                  title="AI OCR App"
-                  allow="camera; microphone; geolocation"
-                />
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

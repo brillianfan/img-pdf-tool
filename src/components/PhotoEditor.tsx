@@ -92,6 +92,8 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   const [layers, setLayers] = useState<fabric.Object[]>([]);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [originalSize, setOriginalSize] = useState({ width: 0, height: 0 });
+  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+  const [vpt, setVpt] = useState<number[]>([1, 0, 0, 1, 0, 0]);
   const [zoom, setZoom] = useState(1);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
     format: 'png',
@@ -181,6 +183,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           }
 
           canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+          setCanvasSize({ width: canvasWidth, height: canvasHeight });
           
           const scale = canvasWidth / imgWidth;
           
@@ -233,8 +236,39 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       if (zoomLevel < 0.01) zoomLevel = 0.01;
       canvas.zoomToPoint(new fabric.Point(opt.e.offsetX, opt.e.offsetY), zoomLevel);
       setZoom(zoomLevel);
+      setVpt([...canvas.viewportTransform!]);
       opt.e.preventDefault();
       opt.e.stopPropagation();
+    });
+
+    // Handle Panning
+    canvas.on('mouse:down', (opt) => {
+      const evt = opt.e as any;
+      if (evt.altKey === true || mode === 'select') {
+        (canvas as any).isDragging = true;
+        (canvas as any).selection = false;
+        (canvas as any).lastPosX = evt.clientX;
+        (canvas as any).lastPosY = evt.clientY;
+      }
+    });
+
+    canvas.on('mouse:move', (opt) => {
+      if ((canvas as any).isDragging) {
+        const e = opt.e as any;
+        const vpt = canvas.viewportTransform!;
+        vpt[4] += e.clientX - (canvas as any).lastPosX;
+        vpt[5] += e.clientY - (canvas as any).lastPosY;
+        canvas.requestRenderAll();
+        (canvas as any).lastPosX = e.clientX;
+        (canvas as any).lastPosY = e.clientY;
+        setVpt([...vpt]);
+      }
+    });
+
+    canvas.on('mouse:up', () => {
+      canvas.setViewportTransform(canvas.viewportTransform!);
+      (canvas as any).isDragging = false;
+      (canvas as any).selection = true;
     });
 
     return () => {
@@ -338,6 +372,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           }
 
           canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+          setCanvasSize({ width: canvasWidth, height: canvasHeight });
           
           const scale = canvasWidth / imgWidth;
           
@@ -493,6 +528,34 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
 
     canvas.clear();
     fabric.Image.fromURL(dataUrl).then((img) => {
+      const imgWidth = img.width!;
+      const imgHeight = img.height!;
+      setOriginalSize({ width: imgWidth, height: imgHeight });
+      
+      const maxWidth = 800;
+      const maxHeight = 600;
+      let canvasWidth = maxWidth;
+      let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+
+      if (canvasHeight > maxHeight) {
+        canvasHeight = maxHeight;
+        canvasWidth = (imgWidth / imgHeight) * maxHeight;
+      }
+
+      canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
+      setCanvasSize({ width: canvasWidth, height: canvasHeight });
+      
+      const scale = canvasWidth / imgWidth;
+      
+      img.set({
+        scaleX: scale,
+        scaleY: scale,
+        left: 0,
+        top: 0,
+        selectable: false,
+        name: 'Background'
+      });
+
       canvas.add(img);
       canvas.renderAll();
       setIsCropMode(false);
@@ -745,6 +808,75 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       canvas.zoomToPoint(new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2), newZoom);
     }
     setZoom(newZoom);
+    setVpt([...canvas.viewportTransform!]);
+  };
+
+  const Ruler = ({ orientation, size, zoom, dpi, scale, offset }: { 
+    orientation: 'horizontal' | 'vertical', 
+    size: number, 
+    zoom: number, 
+    dpi: number, 
+    scale: number,
+    offset: number
+  }) => {
+    const isHorizontal = orientation === 'horizontal';
+    const pixelsPerCm = (dpi / 2.54) * scale * zoom;
+    
+    // Calculate visible range
+    const startCm = Math.floor(-offset / pixelsPerCm);
+    const endCm = Math.ceil((size - offset) / pixelsPerCm);
+    
+    return (
+      <div className={`relative bg-slate-900 overflow-hidden ${isHorizontal ? 'w-full h-full border-b' : 'h-full w-full border-r'} border-slate-700/50`}>
+        <svg width="100%" height="100%" className="absolute inset-0 text-slate-500">
+          <defs>
+            <pattern id={`ruler-${orientation}`} x={offset} y="0" width={pixelsPerCm} height="24" patternUnits="userSpaceOnUse">
+              <line 
+                x1="0" y1="0" x2={isHorizontal ? "0" : "24"} 
+                y2={isHorizontal ? "24" : "0"} 
+                stroke="currentColor" strokeWidth="0.5" 
+              />
+              {Array.from({ length: 9 }).map((_, j) => {
+                const pos = (j + 1) * (pixelsPerCm / 10);
+                const isMid = j === 4;
+                return (
+                  <line 
+                    key={j} 
+                    x1={isHorizontal ? pos : (isMid ? 12 : 18)} 
+                    y1={isHorizontal ? (isMid ? 12 : 18) : pos} 
+                    x2={isHorizontal ? pos : 24} 
+                    y2={isHorizontal ? 24 : pos} 
+                    stroke="currentColor" strokeWidth="0.5" 
+                    opacity="0.5"
+                  />
+                );
+              })}
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill={`url(#ruler-${orientation})`} />
+          
+          {/* Labels */}
+          {Array.from({ length: endCm - startCm + 1 }).map((_, i) => {
+            const cm = startCm + i;
+            const pos = cm * pixelsPerCm + offset;
+            if (pos < -20 || pos > size + 20) return null;
+            return (
+              <text
+                key={cm}
+                x={isHorizontal ? pos + 2 : 2}
+                y={isHorizontal ? 8 : pos + 8}
+                fill="currentColor"
+                fontSize="7"
+                fontFamily="monospace"
+                className="select-none pointer-events-none font-bold"
+              >
+                {cm}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+    );
   };
 
   return (
@@ -821,8 +953,39 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
 
         {/* Main Canvas Area */}
         <div className="flex-1 bg-slate-950 flex items-center justify-center p-8 relative overflow-hidden">
-          <div className="bg-white shadow-2xl rounded-sm overflow-hidden border border-slate-800">
-            <canvas ref={canvasRef} />
+          <div className="relative flex flex-col bg-slate-900 rounded-sm border border-slate-800 shadow-2xl p-1 pt-6 pl-6 overflow-hidden">
+            {/* Ruler Corner */}
+            <div className="absolute top-0 left-0 w-6 h-6 bg-slate-900 border-r border-b border-slate-800 flex items-center justify-center z-10">
+              <span className="text-[7px] text-slate-500 font-bold uppercase select-none">cm</span>
+            </div>
+            
+            {/* Horizontal Ruler */}
+            <div className="absolute top-0 left-6 right-0 h-6 z-10">
+              <Ruler 
+                orientation="horizontal" 
+                size={canvasSize.width} 
+                zoom={vpt[0]} 
+                dpi={exportSettings.dpi} 
+                scale={originalSize.width > 0 ? canvasSize.width / originalSize.width : 1}
+                offset={vpt[4]}
+              />
+            </div>
+
+            {/* Vertical Ruler */}
+            <div className="absolute top-6 left-0 bottom-0 w-6 z-10">
+              <Ruler 
+                orientation="vertical" 
+                size={canvasSize.height} 
+                zoom={vpt[3]} 
+                dpi={exportSettings.dpi} 
+                scale={originalSize.height > 0 ? canvasSize.height / originalSize.height : 1}
+                offset={vpt[5]}
+              />
+            </div>
+
+            <div className="bg-white overflow-hidden">
+              <canvas ref={canvasRef} />
+            </div>
           </div>
 
           {/* Zoom Controls */}
