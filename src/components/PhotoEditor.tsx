@@ -99,8 +99,8 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     format: 'png',
     quality: 0.9,
     dpi: 300,
-    width: 800,
-    height: 600
+    width: 2480, // A4 Portrait 300 DPI
+    height: 3508
   });
 
   const processImageFile = async (imageFile: File): Promise<string> => {
@@ -169,29 +169,42 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           const imgWidth = img.width!;
           const imgHeight = img.height!;
           setOriginalSize({ width: imgWidth, height: imgHeight });
-          setExportSettings(prev => ({ ...prev, width: imgWidth, height: imgHeight }));
           
-          // Resize canvas to match image aspect ratio
+          // A4 Default Canvas Size logic
+          const A4_RATIO = 210 / 297;
+          const isLandscape = imgWidth > imgHeight;
+          const targetRatio = isLandscape ? 1 / A4_RATIO : A4_RATIO;
+
           const maxWidth = 800;
-          const maxHeight = 600;
+          const maxHeight = 800;
+          
           let canvasWidth = maxWidth;
-          let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+          let canvasHeight = maxWidth / targetRatio;
 
           if (canvasHeight > maxHeight) {
             canvasHeight = maxHeight;
-            canvasWidth = (imgWidth / imgHeight) * maxHeight;
+            canvasWidth = maxHeight * targetRatio;
           }
 
           canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
           setCanvasSize({ width: canvasWidth, height: canvasHeight });
+          canvas.backgroundColor = '#ffffff';
+
+          setExportSettings(prev => ({ 
+            ...prev, 
+            width: isLandscape ? 3508 : 2480, 
+            height: isLandscape ? 2480 : 3508 
+          }));
           
-          const scale = canvasWidth / imgWidth;
+          const scaleX = canvasWidth / imgWidth;
+          const scaleY = canvasHeight / imgHeight;
+          const scale = Math.min(scaleX, scaleY);
           
           img.set({
             scaleX: scale,
             scaleY: scale,
-            left: 0,
-            top: 0,
+            left: (canvasWidth - imgWidth * scale) / 2,
+            top: (canvasHeight - imgHeight * scale) / 2,
             selectable: false, // Background should usually be fixed
             name: 'Background',
             hoverCursor: 'default'
@@ -361,26 +374,35 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
           const imgWidth = img.width!;
           const imgHeight = img.height!;
           
+          // A4 Default Canvas Size logic
+          const A4_RATIO = 210 / 297;
+          const isLandscape = imgWidth > imgHeight;
+          const targetRatio = isLandscape ? 1 / A4_RATIO : A4_RATIO;
+
           const maxWidth = 800;
-          const maxHeight = 600;
+          const maxHeight = 800;
+          
           let canvasWidth = maxWidth;
-          let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+          let canvasHeight = maxWidth / targetRatio;
 
           if (canvasHeight > maxHeight) {
             canvasHeight = maxHeight;
-            canvasWidth = (imgWidth / imgHeight) * maxHeight;
+            canvasWidth = maxHeight * targetRatio;
           }
 
           canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
           setCanvasSize({ width: canvasWidth, height: canvasHeight });
-          
-          const scale = canvasWidth / imgWidth;
+          canvas.backgroundColor = '#ffffff';
+
+          const scaleX = canvasWidth / imgWidth;
+          const scaleY = canvasHeight / imgHeight;
+          const scale = Math.min(scaleX, scaleY);
           
           img.set({
             scaleX: scale,
             scaleY: scale,
-            left: 0,
-            top: 0,
+            left: (canvasWidth - imgWidth * scale) / 2,
+            top: (canvasHeight - imgHeight * scale) / 2,
             selectable: false,
             name: 'Background',
             hoverCursor: 'default'
@@ -532,26 +554,35 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
       const imgHeight = img.height!;
       setOriginalSize({ width: imgWidth, height: imgHeight });
       
+      // A4 Default Canvas Size logic
+      const A4_RATIO = 210 / 297;
+      const isLandscape = imgWidth > imgHeight;
+      const targetRatio = isLandscape ? 1 / A4_RATIO : A4_RATIO;
+
       const maxWidth = 800;
-      const maxHeight = 600;
+      const maxHeight = 800;
+      
       let canvasWidth = maxWidth;
-      let canvasHeight = (imgHeight / imgWidth) * maxWidth;
+      let canvasHeight = maxWidth / targetRatio;
 
       if (canvasHeight > maxHeight) {
         canvasHeight = maxHeight;
-        canvasWidth = (imgWidth / imgHeight) * maxHeight;
+        canvasWidth = maxHeight * targetRatio;
       }
 
       canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
       setCanvasSize({ width: canvasWidth, height: canvasHeight });
+      canvas.backgroundColor = '#ffffff';
       
-      const scale = canvasWidth / imgWidth;
+      const scaleX = canvasWidth / imgWidth;
+      const scaleY = canvasHeight / imgHeight;
+      const scale = Math.min(scaleX, scaleY);
       
       img.set({
         scaleX: scale,
         scaleY: scale,
-        left: 0,
-        top: 0,
+        left: (canvasWidth - imgWidth * scale) / 2,
+        top: (canvasHeight - imgHeight * scale) / 2,
         selectable: false,
         name: 'Background'
       });
