@@ -257,7 +257,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     // Handle Panning
     canvas.on('mouse:down', (opt) => {
       const evt = opt.e as any;
-      if (evt.altKey === true || mode === 'select') {
+      if (evt.altKey === true) {
         (canvas as any).isDragging = true;
         (canvas as any).selection = false;
         (canvas as any).lastPosX = evt.clientX;
@@ -858,14 +858,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     const endCm = Math.ceil((size - offset) / pixelsPerCm);
     
     return (
-      <div className={`relative bg-slate-900 overflow-hidden ${isHorizontal ? 'w-full h-full border-b' : 'h-full w-full border-r'} border-slate-700/50`}>
-        <svg width="100%" height="100%" className="absolute inset-0 text-slate-500">
+      <div className={`relative bg-slate-900 overflow-hidden ${isHorizontal ? 'w-full h-full border-b' : 'h-full w-full border-r'} border-slate-700`}>
+        <svg width="100%" height="100%" className="absolute inset-0 text-slate-300">
           <defs>
             <pattern id={`ruler-${orientation}`} x={offset} y="0" width={pixelsPerCm} height="24" patternUnits="userSpaceOnUse">
               <line 
                 x1="0" y1="0" x2={isHorizontal ? "0" : "24"} 
                 y2={isHorizontal ? "24" : "0"} 
-                stroke="currentColor" strokeWidth="0.5" 
+                stroke="currentColor" strokeWidth="1" 
               />
               {Array.from({ length: 9 }).map((_, j) => {
                 const pos = (j + 1) * (pixelsPerCm / 10);
@@ -873,12 +873,12 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
                 return (
                   <line 
                     key={j} 
-                    x1={isHorizontal ? pos : (isMid ? 12 : 18)} 
-                    y1={isHorizontal ? (isMid ? 12 : 18) : pos} 
+                    x1={isHorizontal ? pos : (isMid ? 10 : 16)} 
+                    y1={isHorizontal ? (isMid ? 10 : 16) : pos} 
                     x2={isHorizontal ? pos : 24} 
                     y2={isHorizontal ? 24 : pos} 
-                    stroke="currentColor" strokeWidth="0.5" 
-                    opacity="0.5"
+                    stroke="currentColor" strokeWidth="1" 
+                    opacity="0.6"
                   />
                 );
               })}
@@ -895,9 +895,9 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
               <text
                 key={cm}
                 x={isHorizontal ? pos + 2 : 2}
-                y={isHorizontal ? 8 : pos + 8}
+                y={isHorizontal ? 10 : pos + 10}
                 fill="currentColor"
-                fontSize="7"
+                fontSize="8"
                 fontFamily="monospace"
                 className="select-none pointer-events-none font-bold"
               >
