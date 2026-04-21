@@ -795,7 +795,7 @@ export default function App() {
               onDrop={(e) => onDrop(e, tool.id)}
               onClick={() => {
                 if (tool.id === 'EXTRACT_TEXT_AI') {
-                  window.open('https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30', '_blank');
+                  window.open('https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30?fullscreenApplet=true', '_blank');
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
