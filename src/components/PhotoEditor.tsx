@@ -60,6 +60,7 @@ interface PhotoEditorProps {
   file: File;
   onClose: () => void;
   onSave: (blob: Blob) => void;
+  isMobile?: boolean;
 }
 
 type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop';
@@ -72,7 +73,7 @@ interface ExportSettings {
   height: number;
 }
 
-export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave }) => {
+export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave, isMobile = false }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvas = useRef<fabric.Canvas | null>(null);
   const cropperRef = useRef<ReactCropperElement>(null);
@@ -102,6 +103,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
     width: 2480,
     height: 3508
   });
+  const [showMobilePanel, setShowMobilePanel] = useState(false);
 
   const processImageFile = async (imageFile: File): Promise<string> => {
     const extension = imageFile.name.split('.').pop()?.toLowerCase();
@@ -930,112 +932,162 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-hidden font-sans text-slate-200">
+    <div className={`fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-hidden font-sans text-slate-200 ${isMobile ? 'safe-bottom' : ''}`}>
       {/* Top Bar */}
-      <div className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md">
-        <div className="flex items-center gap-4">
-          <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors">
-            <X className="w-6 h-6" />
-          </button>
-          <div className="h-6 w-px bg-slate-800" />
-          <h2 className="text-slate-200 font-medium">Trình chỉnh sửa ảnh Pro</h2>
-        </div>
+      {isMobile ? (
+        <div className="h-14 border-b border-slate-800 flex items-center justify-between px-4 bg-slate-900/80 backdrop-blur-md shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={onClose} className="p-2 text-slate-400 active:bg-slate-800 rounded-lg">
+              <X className="w-5 h-5" />
+            </button>
+            <div className="h-4 w-px bg-slate-800" />
+            <h2 className="text-slate-200 text-xs font-bold uppercase tracking-wider">Mobile Pro</h2>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={resetCanvas}
-            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-all"
-            title="Khôi phục ảnh gốc"
-          >
-            <RotateCcw className="w-5 h-5" />
-          </button>
-          <div className="h-6 w-px bg-slate-800 mx-2" />
-          <button 
-            onClick={undo} 
-            disabled={historyIndex <= 0}
-            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 disabled:opacity-30 transition-all"
-          >
-            <Undo2 className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={redo} 
-            disabled={historyIndex >= history.length - 1}
-            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 disabled:opacity-30 transition-all"
-          >
-            <Redo2 className="w-5 h-5" />
-          </button>
-          <div className="h-6 w-px bg-slate-800 mx-2" />
-          <button 
-            onClick={handleAiDescribe}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-indigo-500/20"
-          >
-            <Sparkles className="w-4 h-4" />
-            AI Gợi ý
-          </button>
-          <button 
-            onClick={() => setShowExportDialog(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-emerald-500/20"
-          >
-            <Download className="w-4 h-4" />
-            Xuất ảnh
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Toolbar */}
-        <div className="w-16 border-r border-slate-800 bg-slate-900 flex flex-col items-center py-6 gap-4">
-          <ToolButton active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
-          <ToolButton active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
-          <ToolButton active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
-          <div className="w-8 h-px bg-slate-800 my-2" />
-          <ToolButton active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Chèn ảnh" />
-          <ToolButton active={false} onClick={addText} icon={<Type />} label="Chữ" />
-          <ToolButton active={mode === 'rect'} onClick={() => addShape('rect')} icon={<Square />} label="Vuông" />
-          <ToolButton active={mode === 'circle'} onClick={() => addShape('circle')} icon={<Circle />} label="Tròn" />
-          <ToolButton active={mode === 'triangle'} onClick={() => addShape('triangle')} icon={<Triangle />} label="Tam giác" />
-          <div className="w-8 h-px bg-slate-800 my-2" />
-          <ToolButton active={isCropMode} onClick={startCrop} icon={<Crop />} label="Cắt" />
-          <div className="mt-auto">
-            <ToolButton active={false} onClick={deleteObject} icon={<Trash2 />} className="text-rose-500 hover:bg-rose-500/10" label="Xóa đối tượng" />
+          <div className="flex items-center gap-1">
+            <button 
+              onClick={undo} 
+              disabled={historyIndex <= 0}
+              className="p-2 text-slate-400 disabled:opacity-20"
+            >
+              <Undo2 className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={redo} 
+              disabled={historyIndex >= history.length - 1}
+              className="p-2 text-slate-400 disabled:opacity-20"
+            >
+              <Redo2 className="w-4 h-4" />
+            </button>
+            <div className="h-4 w-px bg-slate-800 mx-1" />
+            <button 
+              onClick={handleAiDescribe}
+              className="p-2 text-indigo-400 active:bg-indigo-500/20 rounded-lg"
+            >
+              <Sparkles className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => setShowExportDialog(true)}
+              className="p-2 text-emerald-400 active:bg-emerald-500/20 rounded-lg"
+            >
+              <Download className="w-5 h-5" />
+            </button>
           </div>
         </div>
+      ) : (
+        <div className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md">
+          <div className="flex items-center gap-4">
+            <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors">
+              <X className="w-6 h-6" />
+            </button>
+            <div className="h-6 w-px bg-slate-800" />
+            <h2 className="text-slate-200 font-medium">Trình chỉnh sửa ảnh Pro</h2>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={resetCanvas}
+              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-all"
+              title="Khôi phục ảnh gốc"
+            >
+              <RotateCcw className="w-5 h-5" />
+            </button>
+            <div className="h-6 w-px bg-slate-800 mx-2" />
+            <button 
+              onClick={undo} 
+              disabled={historyIndex <= 0}
+              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 disabled:opacity-30 transition-all"
+            >
+              <Undo2 className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={redo} 
+              disabled={historyIndex >= history.length - 1}
+              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 disabled:opacity-30 transition-all"
+            >
+              <Redo2 className="w-5 h-5" />
+            </button>
+            <div className="h-6 w-px bg-slate-800 mx-2" />
+            <button 
+              onClick={handleAiDescribe}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-indigo-500/20"
+            >
+              <Sparkles className="w-4 h-4" />
+              AI Gợi ý
+            </button>
+            <button 
+              onClick={() => setShowExportDialog(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-emerald-500/20"
+            >
+              <Download className="w-4 h-4" />
+              Xuất ảnh
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className={`flex-1 flex overflow-hidden ${isMobile ? 'flex-col' : ''}`}>
+        {/* Left Toolbar */}
+        {!isMobile && (
+          <div className="w-16 border-r border-slate-800 bg-slate-900 flex flex-col items-center py-6 gap-4">
+            <ToolButton active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
+            <ToolButton active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
+            <ToolButton active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
+            <div className="w-8 h-px bg-slate-800 my-2" />
+            <ToolButton active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Chèn ảnh" />
+            <ToolButton active={false} onClick={addText} icon={<Type />} label="Chữ" />
+            <ToolButton active={mode === 'rect'} onClick={() => addShape('rect')} icon={<Square />} label="Vuông" />
+            <ToolButton active={mode === 'circle'} onClick={() => addShape('circle')} icon={<Circle />} label="Tròn" />
+            <ToolButton active={mode === 'triangle'} onClick={() => addShape('triangle')} icon={<Triangle />} label="Tam giác" />
+            <div className="w-8 h-px bg-slate-800 my-2" />
+            <ToolButton active={isCropMode} onClick={startCrop} icon={<Crop />} label="Cắt" />
+            <div className="mt-auto">
+              <ToolButton active={false} onClick={deleteObject} icon={<Trash2 />} className="text-rose-500 hover:bg-rose-500/10" label="Xóa đối tượng" />
+            </div>
+          </div>
+        )}
 
         {/* Main Canvas Area */}
-        <div className="flex-1 bg-slate-950 flex items-center justify-center p-8 relative overflow-hidden">
-          <div className="relative flex flex-col bg-slate-900 rounded-sm border border-slate-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] p-1 pt-6 pl-6 overflow-hidden">
+        <div className={`flex-1 bg-slate-950 flex items-center justify-center relative overflow-hidden ${isMobile ? 'p-1' : 'p-8'}`}>
+          <div className={`relative flex flex-col bg-slate-900 rounded-sm border border-slate-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] overflow-hidden ${isMobile ? 'p-0 mt-0 h-full w-full justify-center' : 'p-1 pt-6 pl-6'}`}>
             {/* Ruler Corner */}
-            <div className="absolute top-0 left-0 w-6 h-6 bg-slate-900 border-r border-b border-slate-800 flex items-center justify-center z-10">
-              <span className="text-[7px] text-slate-500 font-bold uppercase select-none">cm</span>
-            </div>
+            {!isMobile && (
+              <div className="absolute top-0 left-0 w-6 h-6 bg-slate-900 border-r border-b border-slate-800 flex items-center justify-center z-10">
+                <span className="text-[7px] text-slate-500 font-bold uppercase select-none">cm</span>
+              </div>
+            )}
             
             {/* Horizontal Ruler */}
-            <div className="absolute top-0 left-6 right-0 h-6 z-10">
-              <Ruler 
-                orientation="horizontal" 
-                size={canvasSize.width} 
-                zoom={vpt[0]} 
-                offset={vpt[4]}
-              />
-            </div>
+            {!isMobile && (
+              <div className="absolute top-0 left-6 right-0 h-6 z-10">
+                <Ruler 
+                  orientation="horizontal" 
+                  size={canvasSize.width} 
+                  zoom={vpt[0]} 
+                  offset={vpt[4]}
+                />
+              </div>
+            )}
 
             {/* Vertical Ruler */}
-            <div className="absolute top-6 left-0 bottom-0 w-6 z-10">
-              <Ruler 
-                orientation="vertical" 
-                size={canvasSize.height} 
-                zoom={vpt[3]} 
-                offset={vpt[5]}
-              />
-            </div>
+            {!isMobile && (
+              <div className="absolute top-6 left-0 bottom-0 w-6 z-10">
+                <Ruler 
+                  orientation="vertical" 
+                  size={canvasSize.height} 
+                  zoom={vpt[3]} 
+                  offset={vpt[5]}
+                />
+              </div>
+            )}
 
-            <div className="bg-white overflow-hidden">
+            <div className={`bg-white overflow-hidden flex items-center justify-center ${isMobile ? 'w-full h-full' : ''}`}>
               <canvas ref={canvasRef} />
             </div>
           </div>
 
           {/* Zoom Controls */}
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-slate-900/80 backdrop-blur-md border border-slate-800 p-1.5 rounded-full shadow-2xl z-20">
+          <div className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-2 bg-slate-900/80 backdrop-blur-md border border-slate-800 p-1.5 rounded-full shadow-2xl z-20 transition-all ${isMobile ? 'bottom-20 scale-90' : 'bottom-8'}`}>
             <button 
               onClick={() => handleZoom('out')}
               className="p-2 hover:bg-slate-800 rounded-full text-slate-400 transition-colors"
@@ -1154,7 +1206,8 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
         </div>
 
         {/* Right Panel (Tabs) */}
-        <div className="w-80 border-l border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
+        {!isMobile && (
+          <div className="w-80 border-l border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
           <Tabs.Root defaultValue="layers" className="flex flex-col h-full">
             <Tabs.List className="flex border-b border-slate-800">
               <Tabs.Trigger value="layers" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
@@ -1350,8 +1403,161 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
               )}
             </Tabs.Content>
           </Tabs.Root>
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* Mobile Bottom Toolbar */}
+      {isMobile && (
+        <div className="h-16 bg-slate-900 border-t border-slate-800 flex items-center px-1 overflow-x-auto no-scrollbar gap-1 shrink-0">
+          <ToolButton isMobile active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
+          <ToolButton isMobile active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
+          <ToolButton isMobile active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
+          <ToolButton isMobile active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Ảnh" />
+          <ToolButton isMobile active={false} onClick={addText} icon={<Type />} label="Chữ" />
+          <ToolButton isMobile active={false} onClick={() => addShape('rect')} icon={<Square />} label="Hình" />
+          <ToolButton 
+            isMobile 
+            active={showMobilePanel} 
+            onClick={() => setShowMobilePanel(!showMobilePanel)} 
+            icon={<Settings />} 
+            label="Cài đặt" 
+          />
+          <ToolButton isMobile active={false} onClick={() => { setMode('select'); deleteObject(); }} icon={<Trash2 />} label="Xóa lớp" className="text-rose-400" />
+        </div>
+      )}
+
+      {/* Mobile Side Panel (Drawer Replacement) */}
+      {isMobile && showMobilePanel && (
+        <div className="absolute inset-x-0 bottom-16 top-20 bg-slate-900 border-t border-indigo-500 rounded-t-3xl z-[60] flex flex-col shadow-2xl animate-in slide-in-from-bottom duration-300">
+          <div className="p-4 flex items-center justify-between border-b border-slate-800">
+            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Tùy chọn & Lớp</h3>
+            <button 
+              onClick={() => setShowMobilePanel(false)}
+              className="p-2 text-slate-400 active:bg-slate-800 rounded-full"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto no-scrollbar">
+            <Tabs.Root defaultValue="layers" className="flex flex-col h-full">
+              <Tabs.List className="flex border-b border-slate-800 bg-slate-900/50">
+                <Tabs.Trigger value="layers" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                  Lớp
+                </Tabs.Trigger>
+                <Tabs.Trigger value="properties" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                  Cài đặt
+                </Tabs.Trigger>
+                <Tabs.Trigger value="styles" className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 data-[state=active]:text-white data-[state=active]:border-b-2 data-[state=active]:border-indigo-500 transition-all">
+                  Style
+                </Tabs.Trigger>
+              </Tabs.List>
+
+              <div className="flex-1 overflow-y-scroll no-scrollbar pb-10">
+                <Tabs.Content value="layers" className="p-4">
+                  <div className="space-y-2">
+                    {layers.map((obj) => (
+                      <div 
+                        key={obj.name || Math.random().toString()} 
+                        className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeObject === obj ? 'bg-indigo-600/20 border-indigo-500' : 'bg-slate-800 border-slate-700'}`}
+                        onClick={() => {
+                          fabricCanvas.current?.setActiveObject(obj);
+                          fabricCanvas.current?.renderAll();
+                        }}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-slate-200 text-sm font-medium truncate">{obj.name || 'Layer'}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={(e) => { e.stopPropagation(); toggleLayerVisibility(obj); }} className="p-2 text-slate-400">
+                            {obj.visible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5 text-rose-500" />}
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); toggleLayerLock(obj); }} className="p-2 text-slate-400">
+                            {obj.lockMovementX ? <Lock className="w-5 h-5 text-amber-500" /> : <Unlock className="w-5 h-5" />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Tabs.Content>
+
+                <Tabs.Content value="properties" className="p-6 space-y-8">
+                  {/* Colors */}
+                  <section>
+                    <h3 className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-4">Màu sắc</h3>
+                    <div className="grid grid-cols-5 gap-3">
+                      {['#000000', '#ffffff', '#ef4444', '#22c55e', '#3b82f6', '#6366f1', '#a855f7', '#ec4899', '#facc15', '#f97316'].map(c => (
+                        <button 
+                          key={c}
+                          onClick={() => setColor(c)}
+                          className={`w-10 h-10 rounded-full border-2 transition-all ${color === c ? 'border-white scale-110 shadow-lg' : 'border-transparent shadow-md'}`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Brush & Opacity */}
+                  <section className="space-y-8">
+                    <div>
+                      <div className="flex justify-between mb-3">
+                        <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Kích thước cọ</label>
+                        <span className="text-slate-200 text-xs font-bold">{brushSize}px</span>
+                      </div>
+                      <Slider.Root className="relative flex items-center select-none touch-none w-full h-8" value={[brushSize]} onValueChange={([v]) => setBrushSize(v)} max={100} step={1}>
+                        <Slider.Track className="bg-slate-800 relative grow rounded-full h-[6px]">
+                          <Slider.Range className="absolute bg-indigo-500 rounded-full h-full" />
+                        </Slider.Track>
+                        <Slider.Thumb className="block w-6 h-6 bg-white shadow-xl rounded-full focus:outline-none" />
+                      </Slider.Root>
+                    </div>
+                    <div>
+                      <div className="flex justify-between mb-3">
+                        <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Độ mờ</label>
+                        <span className="text-slate-200 text-xs font-bold">{Math.round(opacity * 100)}%</span>
+                      </div>
+                      <Slider.Root className="relative flex items-center select-none touch-none w-full h-8" value={[opacity]} onValueChange={([v]) => setOpacity(v)} max={1} step={0.01}>
+                        <Slider.Track className="bg-slate-800 relative grow rounded-full h-[6px]">
+                          <Slider.Range className="absolute bg-indigo-500 rounded-full h-full" />
+                        </Slider.Track>
+                        <Slider.Thumb className="block w-6 h-6 bg-white shadow-xl rounded-full focus:outline-none" />
+                      </Slider.Root>
+                    </div>
+                  </section>
+                </Tabs.Content>
+
+                <Tabs.Content value="styles" className="p-6 space-y-8">
+                  {activeObject ? (
+                    <div className="space-y-8">
+                      <section>
+                         <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-4 block">Hòa trộn</label>
+                         <div className="grid grid-cols-2 gap-2">
+                           {['source-over', 'multiply', 'screen', 'overlay', 'darken', 'lighten'].map(m => (
+                             <button key={m} onClick={() => updateLayerStyle('blendMode', m)} className={`px-4 py-3 rounded-xl border text-xs font-bold transition-all ${activeObject.get('globalCompositeOperation') === m ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                               {m.replace('-', ' ').toUpperCase()}
+                             </button>
+                           ))}
+                         </div>
+                      </section>
+                      <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-2xl border border-slate-800">
+                        <span className="text-xs font-bold text-slate-200 uppercase tracking-widest">Đổ bóng</span>
+                        <Switch.Root checked={!!activeObject.shadow} onCheckedChange={(checked) => updateLayerStyle('shadow', checked)} className="w-12 h-6 bg-slate-800 rounded-full relative data-[state=checked]:bg-indigo-600 outline-none">
+                          <Switch.Thumb className="block w-5 h-5 bg-white rounded-full transition-transform translate-x-0.5 data-[state=checked]:translate-x-[26px]" />
+                        </Switch.Root>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 px-6">
+                      <Palette className="w-12 h-12 text-slate-700 mx-auto mb-4" />
+                      <p className="text-slate-500 text-sm">Vui lòng chọn một lớp để tùy chỉnh style</p>
+                    </div>
+                  )}
+                </Tabs.Content>
+              </div>
+            </Tabs.Root>
+          </div>
+        </div>
+      )}
 
       {/* Export Dialog */}
       <Dialog.Root open={showExportDialog} onOpenChange={setShowExportDialog}>
@@ -1507,16 +1713,29 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave 
   );
 };
 
-const ToolButton = ({ active, onClick, icon, label, className = "" }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, className?: string }) => (
+const ToolButton = ({ active, onClick, icon, label, className = "", isMobile = false }: { 
+  active: boolean, 
+  onClick: () => void, 
+  icon: React.ReactNode, 
+  label: string, 
+  className?: string,
+  isMobile?: boolean 
+}) => (
   <button 
     onClick={onClick}
     title={label}
-    className={`p-3 rounded-xl transition-all relative group ${active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'} ${className}`}
+    className={`rounded-xl transition-all relative group flex flex-col items-center justify-center shrink-0 ${
+      isMobile ? 'p-1.5 min-w-[56px] gap-1' : 'p-3'
+    } ${active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'} ${className}`}
   >
-    {React.cloneElement(icon as React.ReactElement, { className: 'w-5 h-5' })}
-    <span className="absolute left-full ml-2 px-2 py-1 bg-slate-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
-      {label}
-    </span>
+    {React.cloneElement(icon as React.ReactElement, { className: isMobile ? 'w-4 h-4' : 'w-5 h-5' })}
+    {isMobile ? (
+      <span className="text-[9px] font-medium truncate w-full text-center leading-none tracking-tight">{label}</span>
+    ) : (
+      <span className="absolute left-full ml-2 px-2 py-1 bg-slate-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
+        {label}
+      </span>
+    )}
   </button>
 );
 

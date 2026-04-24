@@ -46,6 +46,7 @@ type ToolAction =
   | 'SPLIT_PDF' 
   | 'DELETE_PAGES'
   | 'PHOTO_EDITOR'
+  | 'PHOTO_EDITOR_MOBILE'
   | 'EXTRACT_TEXT_AI';
 
 interface Tool {
@@ -125,6 +126,13 @@ const TOOLS: Tool[] = [
     accept: 'image/*,.heic,.heif,.jfif,.pdf'
   },
   { 
+    id: 'PHOTO_EDITOR_MOBILE', 
+    title: 'Chỉnh sửa ảnh mobile', 
+    icon: <Scissors className="w-10 h-10 text-slate-700" />, 
+    description: 'Phiên bản tối ưu cho điện thoại',
+    accept: 'image/*,.heic,.heif,.jfif,.pdf'
+  },
+  { 
     id: 'EXTRACT_TEXT_AI', 
     title: 'Trích xuất văn bản AI (OCR)', 
     icon: <Sparkles className="w-10 h-10 text-slate-700" />, 
@@ -144,6 +152,7 @@ export default function App() {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showDpiMenu, setShowDpiMenu] = useState(false);
   const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
+  const [isMobileEditor, setIsMobileEditor] = useState(false);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -568,9 +577,11 @@ export default function App() {
           break;
         }
 
-        case 'PHOTO_EDITOR': {
+        case 'PHOTO_EDITOR':
+        case 'PHOTO_EDITOR_MOBILE': {
           const file = processedFiles[0];
           setPhotoEditorFile(file);
+          setIsMobileEditor(action === 'PHOTO_EDITOR_MOBILE');
           setStatus(null);
           break;
         }
@@ -1063,10 +1074,15 @@ export default function App() {
       {photoEditorFile && (
         <PhotoEditor 
           file={photoEditorFile} 
-          onClose={() => setPhotoEditorFile(null)}
+          isMobile={isMobileEditor}
+          onClose={() => {
+            setPhotoEditorFile(null);
+            setIsMobileEditor(false);
+          }}
           onSave={(blob) => {
             downloadBlob(blob, 'edited-image.png');
             setPhotoEditorFile(null);
+            setIsMobileEditor(false);
           }}
         />
       )}

@@ -10,6 +10,14 @@ body {
   @apply antialiased;
 }
 
+@utility no-scrollbar {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 input[type="range"]::-webkit-slider-thumb {
   @apply w-5 h-5 bg-blue-600 rounded-full border-2 border-white shadow-md cursor-pointer appearance-none;
 }
