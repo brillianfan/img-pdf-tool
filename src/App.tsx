@@ -26,7 +26,7 @@ import {
   GripVertical,
   Facebook
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
@@ -74,21 +74,24 @@ const TOOLS: Tool[] = [
     title: 'PDF sang Ảnh (JPG)', 
     icon: <ImageIcon className="w-10 h-10 text-slate-700" />, 
     description: 'Tách các trang PDF thành các file ảnh (tải về file ZIP)',
-    accept: '.pdf'
+    accept: '.pdf',
+    multiple: true
   },
   { 
     id: 'EXTRACT_PAGES', 
     title: 'Trích xuất trang PDF', 
     icon: <FileText className="w-10 h-10 text-slate-700" />, 
     description: 'Lấy các trang cụ thể từ tệp PDF của bạn',
-    accept: '.pdf'
+    accept: '.pdf',
+    multiple: true
   },
   { 
     id: 'COMPRESS_PDF', 
     title: 'Nén tệp PDF', 
     icon: <Package className="w-10 h-10 text-slate-700" />, 
     description: 'Giảm dung lượng tệp PDF mà vẫn giữ chất lượng',
-    accept: '.pdf'
+    accept: '.pdf',
+    multiple: true
   },
   { 
     id: 'CONVERT_IMAGE', 
@@ -111,42 +114,48 @@ const TOOLS: Tool[] = [
     title: 'Tách 1 PDF thành nhiều trang', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Chia nhỏ tệp PDF thành từng trang riêng lẻ',
-    accept: '.pdf'
+    accept: '.pdf',
+    multiple: true
   },
   { 
     id: 'DELETE_PAGES', 
     title: 'Xóa trang PDF', 
     icon: <Trash2 className="w-10 h-10 text-slate-700" />, 
     description: 'Loại bỏ các trang không mong muốn khỏi PDF',
-    accept: '.pdf'
+    accept: '.pdf',
+    multiple: true
   },
   { 
     id: 'PHOTO_EDITOR', 
     title: 'Chỉnh sửa ảnh (Photoshop)', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Cắt, vẽ, thêm chữ, bộ lọc và AI cho ảnh',
-    accept: 'image/*,.heic,.heif,.jfif,.pdf'
+    accept: 'image/*,.heic,.heif,.jfif,.pdf',
+    multiple: true
   },
   { 
     id: 'PHOTO_EDITOR_MOBILE', 
     title: 'Chỉnh sửa ảnh mobile', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Phiên bản tối ưu cho điện thoại',
-    accept: 'image/*,.heic,.heif,.jfif,.pdf'
+    accept: 'image/*,.heic,.heif,.jfif,.pdf',
+    multiple: true
   },
   { 
     id: 'EXTRACT_TEXT_AI', 
     title: 'Trích xuất văn bản AI (OCR)', 
     icon: <Sparkles className="w-10 h-10 text-slate-700" />, 
     description: 'Sử dụng ứng dụng AI để nhận diện văn bản từ hình ảnh và PDF',
-    accept: '*'
+    accept: '*',
+    multiple: true
   },
   { 
     id: 'PHOTOPEA', 
     title: 'Photopea (Online Editor)', 
     icon: <Pencil className="w-10 h-10 text-slate-700" />, 
     description: 'Mở trình chỉnh sửa ảnh chuyên nghiệp Photopea trong tab mới',
-    accept: '*'
+    accept: '*',
+    multiple: true
   }
 ];
 
@@ -261,30 +270,40 @@ export default function App() {
 
       switch (action) {
         case 'PDF_TO_IMG': {
-          const file = processedFiles[0];
-          const arrayBuffer = await file.arrayBuffer();
-          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-          const pdf = await loadingTask.promise;
-          const numPages = pdf.numPages;
           const zip = new JSZip();
-          const padding = numPages.toString().length;
+          let totalProcessedPages = 0;
           
-          for (let i = 1; i <= numPages; i++) {
-            const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: dpi / 72 }); 
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            if (!context) continue;
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            await page.render({ canvasContext: context, viewport: viewport } as any).promise;
-            const imgData = canvas.toDataURL('image/jpeg', quality / 100);
-            const pageNum = i.toString().padStart(padding, '0');
-            zip.file(`page_${pageNum}.jpg`, imgData.split(',')[1], { base64: true });
-            setStatus({ message: `Đang xử lý: ${i}/${numPages} trang...`, type: 'loading' });
+          for (let f = 0; f < processedFiles.length; f++) {
+            const file = processedFiles[f];
+            setStatus({ message: `Đang chuẩn bị tệp PDF ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            const pdf = await loadingTask.promise;
+            const numPages = pdf.numPages;
+            const padding = numPages.toString().length;
+            
+            const fileFolder = processedFiles.length > 1 ? zip.folder(file.name.replace(/\.pdf$/i, '')) : zip;
+            
+            for (let i = 1; i <= numPages; i++) {
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: dpi / 72 }); 
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d');
+              if (!context) continue;
+              canvas.height = viewport.height;
+              canvas.width = viewport.width;
+              await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+              const imgData = canvas.toDataURL('image/jpeg', quality / 100);
+              const pageNum = i.toString().padStart(padding, '0');
+              fileFolder?.file(`page_${pageNum}.jpg`, imgData.split(',')[1], { base64: true });
+              totalProcessedPages++;
+              setStatus({ message: `Đang xử lý PDF ${f + 1}/${processedFiles.length}: ${i}/${numPages} trang...`, type: 'loading' });
+            }
           }
+          
           const content = await zip.generateAsync({ type: 'blob' });
-          downloadBlob(content, `${file.name.replace('.pdf', '')}_images.zip`);
+          const zipName = processedFiles.length > 1 ? 'converted_pdfs_images.zip' : `${processedFiles[0].name.replace(/\.pdf$/i, '')}_images.zip`;
+          downloadBlob(content, zipName);
           setStatus({ message: '✅ Đã tách trang thành công!', type: 'success' });
           break;
         }
@@ -376,27 +395,33 @@ export default function App() {
         }
 
         case 'SPLIT_PDF': {
-          const file = processedFiles[0];
           setStatus({ message: '🔄 Đang tách các trang PDF...', type: 'loading' });
-          
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-          const pageCount = pdf.getPageCount();
           const zip = new JSZip();
-          const padding = pageCount.toString().length;
           
-          for (let i = 0; i < pageCount; i++) {
-            setStatus({ message: `Đang tách trang: ${i + 1}/${pageCount}...`, type: 'loading' });
-            const newPdf = await PDFDocument.create();
-            const [page] = await newPdf.copyPages(pdf, [i]);
-            newPdf.addPage(page);
-            const pdfBytes = await newPdf.save();
-            const pageNum = (i + 1).toString().padStart(padding, '0');
-            zip.file(`page_${pageNum}.pdf`, pdfBytes);
+          for (let f = 0; f < processedFiles.length; f++) {
+            const file = processedFiles[f];
+            setStatus({ message: `Đang xử lý tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const pageCount = pdf.getPageCount();
+            const padding = pageCount.toString().length;
+            
+            const fileFolder = processedFiles.length > 1 ? zip.folder(file.name.replace(/\.pdf$/i, '')) : zip;
+            
+            for (let i = 0; i < pageCount; i++) {
+              const newPdf = await PDFDocument.create();
+              const [page] = await newPdf.copyPages(pdf, [i]);
+              newPdf.addPage(page);
+              const pdfBytes = await newPdf.save();
+              const pageNum = (i + 1).toString().padStart(padding, '0');
+              fileFolder?.file(`page_${pageNum}.pdf`, pdfBytes);
+            }
           }
           
           const zipBlob = await zip.generateAsync({ type: 'blob' });
-          downloadBlob(zipBlob, `${file.name.replace(/\.pdf$/i, '')}_split.zip`);
+          const zipName = processedFiles.length > 1 ? 'split_pdfs.zip' : `${processedFiles[0].name.replace(/\.pdf$/i, '')}_split.zip`;
+          downloadBlob(zipBlob, zipName);
           setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
           break;
         }
@@ -417,24 +442,40 @@ export default function App() {
           if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
           
           setStatus({ message: '🔄 Đang xóa các trang PDF...', type: 'loading' });
-          const file = processedFiles[0];
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-          
-          const newPdf = await PDFDocument.create();
-          const totalPages = pdf.getPageCount();
-          const indicesToKeep = pdf.getPageIndices().filter(i => !pageIndices.includes(i));
-          
-          if (indicesToKeep.length === 0) {
-            throw new Error('Không thể xóa tất cả các trang');
+          const zip = new JSZip();
+          const filesToDeleteFrom = Array.from(toolInput?.files || processedFiles) as File[];
+
+          for (let f = 0; f < filesToDeleteFrom.length; f++) {
+            const file = filesToDeleteFrom[f];
+            setStatus({ message: `Đang xử lý tệp ${f + 1}/${filesToDeleteFrom.length}: ${file.name}...`, type: 'loading' });
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const newPdf = await PDFDocument.create();
+            const indicesToKeep = pdf.getPageIndices().filter(i => !pageIndices.includes(i));
+            
+            if (indicesToKeep.length === 0) {
+              continue; // Skip if all pages deleted
+            }
+
+            const copiedPages = await newPdf.copyPages(pdf, indicesToKeep);
+            copiedPages.forEach(page => newPdf.addPage(page));
+            const pdfBytes = await newPdf.save();
+            zip.file(`${file.name.replace(/\.pdf$/i, '')}_modified.pdf`, pdfBytes);
           }
-
-          const copiedPages = await newPdf.copyPages(pdf, indicesToKeep);
-          copiedPages.forEach(page => newPdf.addPage(page));
-
-          const pdfBytes = await newPdf.save();
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          downloadBlob(blob, 'modified.pdf');
+          
+          if (filesToDeleteFrom.length > 1) {
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, 'deleted_pages_pdfs.zip');
+          } else {
+            const firstFileKey = Object.keys(zip.files)[0];
+            const pdfBytes = await zip.file(firstFileKey)?.async('uint8array');
+            if (pdfBytes) {
+              const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+              downloadBlob(blob, firstFileKey);
+            }
+          }
+          
           setStatus({ message: '✅ Đã xóa trang thành công!', type: 'success' });
           setToolInput(null);
           break;
@@ -456,24 +497,41 @@ export default function App() {
           if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
 
           setStatus({ message: '🔄 Đang trích xuất các trang PDF...', type: 'loading' });
-          const file = processedFiles[0];
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-          
-          const newPdf = await PDFDocument.create();
-          const totalPages = pdf.getPageCount();
-          const validIndices = pageIndices.filter(i => i >= 0 && i < totalPages);
-          
-          if (validIndices.length === 0) {
-            throw new Error('Số trang trích xuất không hợp lệ');
+          const zip = new JSZip();
+          const filesToExtractFrom = Array.from(toolInput?.files || processedFiles) as File[];
+
+          for (let f = 0; f < filesToExtractFrom.length; f++) {
+            const file = filesToExtractFrom[f];
+            setStatus({ message: `Đang xử lý tệp ${f + 1}/${filesToExtractFrom.length}: ${file.name}...`, type: 'loading' });
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const newPdf = await PDFDocument.create();
+            const totalPages = pdf.getPageCount();
+            const validIndices = pageIndices.filter(i => i >= 0 && i < totalPages);
+            
+            if (validIndices.length === 0) {
+              continue;
+            }
+
+            const copiedPages = await newPdf.copyPages(pdf, validIndices);
+            copiedPages.forEach(page => newPdf.addPage(page));
+            const pdfBytes = await newPdf.save();
+            zip.file(`${file.name.replace(/\.pdf$/i, '')}_extracted.pdf`, pdfBytes);
           }
-
-          const copiedPages = await newPdf.copyPages(pdf, validIndices);
-          copiedPages.forEach(page => newPdf.addPage(page));
-
-          const pdfBytes = await newPdf.save();
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          downloadBlob(blob, 'extracted.pdf');
+          
+          if (filesToExtractFrom.length > 1) {
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, 'extracted_pages_pdfs.zip');
+          } else {
+            const firstFileKey = Object.keys(zip.files)[0];
+            const pdfBytes = await zip.file(firstFileKey)?.async('uint8array');
+            if (pdfBytes) {
+              const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+              downloadBlob(blob, firstFileKey);
+            }
+          }
+          
           setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
           setToolInput(null);
           break;
@@ -539,49 +597,84 @@ export default function App() {
         }
 
         case 'COMPRESS_PDF': {
-          const file = processedFiles[0];
-          setStatus({ message: '🔄 Đang nén PDF (Phương pháp Rasterize Pro)...', type: 'loading' });
-          
-          const arrayBuffer = await file.arrayBuffer();
-          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-          const pdf = await loadingTask.promise;
-          const numPages = pdf.numPages;
-          
-          const pdfDoc = await PDFDocument.create();
-          
-          for (let i = 1; i <= numPages; i++) {
-            setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
-            const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: dpi / 72 }); 
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            if (!context) continue;
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+          if (processedFiles.length > 1) {
+            setStatus({ message: '🔄 Đang nén hàng loạt PDF...', type: 'loading' });
+            const zip = new JSZip();
             
-            const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
-            if (blob) {
-              const imgBuffer = await blob.arrayBuffer();
-              const image = await pdfDoc.embedJpg(imgBuffer);
+            for (let f = 0; f < processedFiles.length; f++) {
+              const file = processedFiles[f];
+              setStatus({ message: `Đang nén tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
               
-              const scale = 72 / dpi;
-              const width = image.width * scale;
-              const height = image.height * scale;
+              const arrayBuffer = await file.arrayBuffer();
+              const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+              const pdf = await loadingTask.promise;
+              const numPages = pdf.numPages;
+              const pdfDoc = await PDFDocument.create();
               
-              const newPage = pdfDoc.addPage([width, height]);
-              newPage.drawImage(image, {
-                x: 0,
-                y: 0,
-                width: width,
-                height: height,
-              });
+              for (let i = 1; i <= numPages; i++) {
+                const page = await pdf.getPage(i);
+                const viewport = page.getViewport({ scale: dpi / 72 }); 
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                if (!context) continue;
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+                
+                const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
+                if (blob) {
+                  const imgBuffer = await blob.arrayBuffer();
+                  const image = await pdfDoc.embedJpg(imgBuffer);
+                  const scale = 72 / dpi;
+                  const width = image.width * scale;
+                  const height = image.height * scale;
+                  const newPage = pdfDoc.addPage([width, height]);
+                  newPage.drawImage(image, { x: 0, y: 0, width, height });
+                }
+                setStatus({ message: `Đang nén tệp ${f + 1}/${processedFiles.length}: ${i}/${numPages} trang...`, type: 'loading' });
+              }
+              const pdfBytes = await pdfDoc.save();
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_compressed.pdf`, pdfBytes);
             }
+            
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, 'compressed_pdfs.zip');
+          } else {
+            const file = processedFiles[0];
+            setStatus({ message: '🔄 Đang nén PDF (Rasterize Pro)...', type: 'loading' });
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            const pdf = await loadingTask.promise;
+            const numPages = pdf.numPages;
+            const pdfDoc = await PDFDocument.create();
+            
+            for (let i = 1; i <= numPages; i++) {
+              setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: dpi / 72 }); 
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d');
+              if (!context) continue;
+              canvas.height = viewport.height;
+              canvas.width = viewport.width;
+              await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+              
+              const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
+              if (blob) {
+                const imgBuffer = await blob.arrayBuffer();
+                const image = await pdfDoc.embedJpg(imgBuffer);
+                const scale = 72 / dpi;
+                const width = image.width * scale;
+                const height = image.height * scale;
+                const newPage = pdfDoc.addPage([width, height]);
+                newPage.drawImage(image, { x: 0, y: 0, width, height });
+              }
+            }
+            const pdfBytes = await pdfDoc.save();
+            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+            downloadBlob(blob, `${file.name.replace(/\.pdf$/i, '')}_compressed.pdf`);
           }
-          
-          const pdfBytes = await pdfDoc.save();
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          downloadBlob(blob, `${file.name.replace('.pdf', '')}_compressed.pdf`);
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
           break;
         }
@@ -906,39 +999,24 @@ export default function App() {
                     />
                   </div>
                 ) : toolInput.type === 'reorder' ? (
-                  <div className="space-y-2 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                  <Reorder.Group 
+                    axis="y" 
+                    values={Array.from(toolInput.files) as File[]} 
+                    onReorder={(newFiles) => setToolInput({ ...toolInput, files: newFiles })}
+                    className="space-y-2 max-h-96 overflow-y-auto pr-2 custom-scrollbar p-1"
+                  >
                     {(Array.from(toolInput.files) as File[]).map((file, idx) => (
-                      <div 
-                        key={`${file.name}-${idx}`}
-                        className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl group"
+                      <Reorder.Item 
+                        key={`${file.name}-${idx}`} 
+                        value={file}
+                        className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl group cursor-grab active:cursor-grabbing hover:border-blue-200 transition-colors"
                       >
-                        <GripVertical className="w-4 h-4 text-slate-300" />
+                        <GripVertical className="w-4 h-4 text-slate-300 group-hover:text-blue-400" />
                         <span className="flex-1 text-sm font-medium text-slate-700 truncate">{file.name}</span>
                         <div className="flex gap-1">
                           <button 
-                            disabled={idx === 0}
-                            onClick={() => {
-                              const newFiles = [...(Array.from(toolInput.files) as File[])];
-                              [newFiles[idx], newFiles[idx-1]] = [newFiles[idx-1], newFiles[idx]];
-                              setToolInput({ ...toolInput, files: newFiles });
-                            }}
-                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 transition-all"
-                          >
-                            <ArrowUp className="w-4 h-4" />
-                          </button>
-                          <button 
-                            disabled={idx === toolInput.files.length - 1}
-                            onClick={() => {
-                              const newFiles = [...(Array.from(toolInput.files) as File[])];
-                              [newFiles[idx], newFiles[idx+1]] = [newFiles[idx+1], newFiles[idx]];
-                              setToolInput({ ...toolInput, files: newFiles });
-                            }}
-                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 transition-all"
-                          >
-                            <ArrowDown className="w-4 h-4" />
-                          </button>
-                          <button 
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               const newFiles = (Array.from(toolInput.files) as File[]).filter((_, i) => i !== idx);
                               if (newFiles.length < 2) {
                                 setToolInput(null);
@@ -952,9 +1030,9 @@ export default function App() {
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
-                      </div>
+                      </Reorder.Item>
                     ))}
-                  </div>
+                  </Reorder.Group>
                 ) : toolInput.type === 'select' ? (
                   <div className="grid grid-cols-2 gap-3">
                     {toolInput.options?.map(opt => (
