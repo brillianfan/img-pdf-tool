@@ -65,7 +65,7 @@ interface PhotoEditorProps {
   isMobile?: boolean;
 }
 
-type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop' | 'marquee';
+type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop' | 'marquee' | 'healing';
 
 interface SelectionArea {
   left: number;
@@ -89,6 +89,11 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
   const insertImageInputRef = useRef<HTMLInputElement>(null);
   
   const [mode, setMode] = useState<EditorMode>('select');
+  const modeRef = useRef<EditorMode>('select');
+  
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
   const [color, setColor] = useState('#000000');
   const [brushSize, setBrushSize] = useState(5);
   const [opacity, setOpacity] = useState(1);
@@ -102,6 +107,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
   const [layers, setLayers] = useState<fabric.Object[]>([]);
   const [activeSelection, setActiveSelection] = useState<SelectionArea | null>(null);
   const selectionRectRef = useRef<fabric.Rect | null>(null);
+  const healingPathRef = useRef<fabric.Path | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [originalSize, setOriginalSize] = useState({ width: 0, height: 0 });
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -254,6 +260,36 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       updateLayers();
     });
 
+    canvas.on('path:created', (e: any) => {
+      if (modeRef.current === 'healing') {
+        const path = e.path;
+        path.set({
+          selectable: false,
+          stroke: 'rgba(251, 191, 36, 0.5)',
+          fill: 'rgba(251, 191, 36, 0.3)',
+          name: 'HealingSelectionPath'
+        });
+        
+        // Remove old healing path if it exists
+        if (healingPathRef.current) {
+          canvas.remove(healingPathRef.current);
+        }
+        
+        healingPathRef.current = path;
+        
+        // Use path bounding box for selection
+        const bounds = path.getBoundingRect();
+        setActiveSelection({
+          left: bounds.left,
+          top: bounds.top,
+          width: bounds.width,
+          height: bounds.height
+        });
+        
+        canvas.renderAll();
+      }
+    });
+
     // Zoom on wheel
     canvas.on('mouse:wheel', (opt) => {
       const delta = opt.e.deltaY;
@@ -279,7 +315,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         return;
       }
 
-      if (mode === 'marquee') {
+      if (modeRef.current === 'marquee') {
         const pointer = canvas.getPointer(opt.e);
         const startX = pointer.x;
         const startY = pointer.y;
@@ -321,7 +357,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         (canvas as any).lastPosX = e.clientX;
         (canvas as any).lastPosY = e.clientY;
         setVpt([...vpt]);
-      } else if ((canvas as any).isSelecting && mode === 'marquee' && selectionRectRef.current) {
+      } else if ((canvas as any).isSelecting && modeRef.current === 'marquee' && selectionRectRef.current) {
         const pointer = canvas.getPointer(opt.e);
         const rect = selectionRectRef.current;
         const startX = (canvas as any).selectionStartX;
@@ -342,7 +378,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         canvas.setViewportTransform(canvas.viewportTransform!);
         (canvas as any).isDragging = false;
         canvas.selection = true;
-      } else if ((canvas as any).isSelecting && mode === 'marquee' && selectionRectRef.current) {
+      } else if ((canvas as any).isSelecting && modeRef.current === 'marquee' && selectionRectRef.current) {
         (canvas as any).isSelecting = false;
         const rect = selectionRectRef.current;
         if (rect.width! > 5 && rect.height! > 5) {
@@ -377,17 +413,21 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
     const canvas = fabricCanvas.current;
     if (!canvas) return;
 
-    if (mode !== 'marquee') {
+    if (mode !== 'marquee' && mode !== 'healing') {
       if (selectionRectRef.current) {
         canvas.remove(selectionRectRef.current);
         selectionRectRef.current = null;
       }
+      if (healingPathRef.current) {
+        canvas.remove(healingPathRef.current);
+        healingPathRef.current = null;
+      }
       setActiveSelection(null);
     }
 
-    canvas.isDrawingMode = mode === 'brush' || mode === 'eraser';
+    canvas.isDrawingMode = mode === 'brush' || mode === 'eraser' || mode === 'healing';
     canvas.selection = mode === 'select';
-    canvas.hoverCursor = mode === 'marquee' ? 'crosshair' : 'default';
+    canvas.hoverCursor = mode === 'marquee' ? 'crosshair' : mode === 'healing' ? 'cell' : 'default';
     
     if (canvas.isDrawingMode) {
       if (mode === 'brush') {
@@ -398,6 +438,10 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
         canvas.freeDrawingBrush.color = '#ffffff';
         canvas.freeDrawingBrush.width = brushSize;
+      } else if (mode === 'healing') {
+        canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+        canvas.freeDrawingBrush.color = 'rgba(251, 191, 36, 0.6)';
+        canvas.freeDrawingBrush.width = brushSize * 3; // Wider by default for healing
       }
     }
   }, [mode, color, brushSize]);
@@ -695,11 +739,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
     const canvas = fabricCanvas.current;
     
     try {
-      // Find the main image layer (background or the largest image)
-      const objects = canvas.getObjects('image');
-      const mainImage = objects[0] as fabric.Image;
+      // Prioritize active layer if it is an image, otherwise find the main background
+      let targetImage = activeObject as fabric.Image;
+      if (!targetImage || targetImage.type !== 'image') {
+        const objects = canvas.getObjects('image');
+        targetImage = objects[0] as fabric.Image;
+      }
       
-      if (!mainImage) {
+      if (!targetImage) {
         setIsProcessing(false);
         return;
       }
@@ -714,30 +761,20 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       tempCanvas.width = width;
       tempCanvas.height = height;
 
-      // Draw original area with some context around it for sampling
-      const sampleMargin = 20;
-      const sampleLeft = Math.max(0, left - sampleMargin);
-      const sampleTop = Math.max(0, top - sampleMargin);
-      const sampleWidth = width + sampleMargin * 2;
-      const sampleHeight = height + sampleMargin * 2;
-
-      // Create a pattern or sample from surroundings
-      // For this implementation, we take the average of the pixels around the box 
-      // and fill with a gradient of those colors
-      
-      // Get colors from edges
+      // Draw original area
       const sampleCanvas = document.createElement('canvas');
       sampleCanvas.width = canvas.width!;
       sampleCanvas.height = canvas.height!;
       const sctx = sampleCanvas.getContext('2d')!;
       
-      // Hide selection rect before capturing
+      // Hide selection rect/path before capturing
       if (selectionRectRef.current) selectionRectRef.current.visible = false;
+      if (healingPathRef.current) healingPathRef.current.visible = false;
       canvas.renderAll();
       
       sctx.drawImage(canvas.getElement(), 0, 0);
       
-      // Sample top, bottom, left, right edges
+      // Sample top, bottom, left, right edges around the bounding box
       const topData = sctx.getImageData(left, Math.max(0, top - 2), width, 1).data;
       const bottomData = sctx.getImageData(left, Math.min(canvas.height! - 1, top + height + 1), width, 1).data;
       const leftData = sctx.getImageData(Math.max(0, left - 2), top, 1, height).data;
@@ -750,18 +787,13 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const i = (y * width + x) * 4;
-          
-          // Calculate weights based on distance to nearest edge
           const wx1 = (width - x) / width;
           const wx2 = x / width;
           const wy1 = (height - y) / height;
           const wy2 = y / height;
-
-          // Simple horizontal/vertical mix
           const ri = x * 4;
           const li = y * 4;
           
-          // Mix colors from edges
           data[i] = (topData[ri] * wy1 + bottomData[ri] * wy2 + leftData[li] * wx1 + rightData[li] * wx2) / 2;
           data[i+1] = (topData[ri+1] * wy1 + bottomData[ri+1] * wy2 + leftData[li+1] * wx1 + rightData[li+1] * wx2) / 2;
           data[i+2] = (topData[ri+2] * wy1 + bottomData[ri+2] * wy2 + leftData[li+2] * wx1 + rightData[li+2] * wx2) / 2;
@@ -770,6 +802,18 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       }
 
       ctx.putImageData(imageData, 0, 0);
+
+      // MASKING: If using healing tool, we only want to fill the painted area
+      if (healingPathRef.current) {
+        ctx.globalCompositeOperation = 'destination-in';
+        // Render path relative to its own bounding box
+        const pathData = healingPathRef.current.toDataURL();
+        const pathImg = new Image();
+        pathImg.src = pathData;
+        await new Promise(resolve => pathImg.onload = resolve);
+        
+        ctx.drawImage(pathImg, 0, 0, width, height);
+      }
       
       // Add a slight blur to the fill patch
       ctx.filter = 'blur(2px)';
@@ -791,6 +835,10 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       if (selectionRectRef.current) {
         canvas.remove(selectionRectRef.current);
         selectionRectRef.current = null;
+      }
+      if (healingPathRef.current) {
+        canvas.remove(healingPathRef.current);
+        healingPathRef.current = null;
       }
       setActiveSelection(null);
       setMode('select');
@@ -1223,13 +1271,30 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
               AI Gợi ý
             </button>
             {activeSelection && (
-              <button 
-                onClick={handleContentAwareFill}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-amber-500/20 animate-in fade-in zoom-in duration-200"
-              >
-                <Wand2 className="w-4 h-4" />
-                Fill (AI)
-              </button>
+              <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-4 duration-300">
+                <button 
+                  onClick={handleContentAwareFill}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-full text-sm font-bold transition-all shadow-lg shadow-amber-500/20"
+                >
+                  <Wand2 className="w-4 h-4" />
+                  Content Aware Fill
+                </button>
+                <button 
+                  onClick={() => {
+                    const canvas = fabricCanvas.current;
+                    if (canvas) {
+                      if (selectionRectRef.current) canvas.remove(selectionRectRef.current);
+                      if (healingPathRef.current) canvas.remove(healingPathRef.current);
+                      canvas.renderAll();
+                    }
+                    setActiveSelection(null);
+                  }}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full transition-all"
+                  title="Bỏ vùng chọn"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             )}
             <button 
               onClick={() => setShowExportDialog(true)}
@@ -1247,7 +1312,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         {!isMobile && (
           <div className="w-16 border-r border-slate-800 bg-slate-900 flex flex-col items-center py-6 gap-4">
             <ToolButton active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
-            <ToolButton active={mode === 'marquee'} onClick={() => setMode('marquee')} icon={<SquareDashed />} label="Vùng chọn" />
+            <ToolButton active={mode === 'healing'} onClick={() => setMode('healing')} icon={<Wand2 className="w-4 h-4" />} label="Xóa AI" />
             <ToolButton active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
             <ToolButton active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
             <div className="w-8 h-px bg-slate-800 my-2" />
@@ -1628,7 +1693,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       {isMobile && (
         <div className="h-16 bg-slate-900 border-t border-slate-800 flex items-center px-1 overflow-x-auto no-scrollbar gap-1 shrink-0">
           <ToolButton isMobile active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
-          <ToolButton isMobile active={mode === 'marquee'} onClick={() => setMode('marquee')} icon={<SquareDashed />} label="Vùng chọn" />
+          <ToolButton isMobile active={mode === 'healing'} onClick={() => setMode('healing')} icon={<Wand2 className="w-4 h-4" />} label="Xóa AI" />
           <ToolButton isMobile active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
           <ToolButton isMobile active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
           <ToolButton isMobile active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Ảnh" />
