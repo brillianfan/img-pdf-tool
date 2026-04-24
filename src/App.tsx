@@ -16,6 +16,7 @@ import {
   Plus,
   Scissors,
   Trash2,
+  Pencil,
   RefreshCw,
   Image as ImageIcon,
   X,
@@ -47,7 +48,8 @@ type ToolAction =
   | 'DELETE_PAGES'
   | 'PHOTO_EDITOR'
   | 'PHOTO_EDITOR_MOBILE'
-  | 'EXTRACT_TEXT_AI';
+  | 'EXTRACT_TEXT_AI'
+  | 'PHOTOPEA';
 
 interface Tool {
   id: ToolAction;
@@ -137,6 +139,13 @@ const TOOLS: Tool[] = [
     title: 'Trích xuất văn bản AI (OCR)', 
     icon: <Sparkles className="w-10 h-10 text-slate-700" />, 
     description: 'Sử dụng ứng dụng AI để nhận diện văn bản từ hình ảnh và PDF',
+    accept: '*'
+  },
+  { 
+    id: 'PHOTOPEA', 
+    title: 'Photopea (Online Editor)', 
+    icon: <Pencil className="w-10 h-10 text-slate-700" />, 
+    description: 'Mở trình chỉnh sửa ảnh chuyên nghiệp Photopea trong tab mới',
     accept: '*'
   }
 ];
@@ -807,6 +816,8 @@ export default function App() {
               onClick={() => {
                 if (tool.id === 'EXTRACT_TEXT_AI') {
                   window.open('https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30?fullscreenApplet=true', '_blank');
+                } else if (tool.id === 'PHOTOPEA') {
+                  window.open('https://www.photopea.com/', '_blank');
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();

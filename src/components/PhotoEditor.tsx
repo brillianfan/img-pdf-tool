@@ -1270,6 +1270,13 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
               <Sparkles className="w-4 h-4" />
               AI Gợi ý
             </button>
+            <button 
+              onClick={() => window.open('https://www.photopea.com/', '_blank')}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full text-sm font-medium transition-all"
+            >
+              <ImageIcon className="w-4 h-4" />
+              Photopea
+            </button>
             {activeSelection && (
               <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-4 duration-300">
                 <button 
@@ -1705,6 +1712,13 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
             onClick={() => setShowMobilePanel(!showMobilePanel)} 
             icon={<Settings />} 
             label="Cài đặt" 
+          />
+          <ToolButton 
+            isMobile 
+            active={false} 
+            onClick={() => window.open('https://www.photopea.com/', '_blank')} 
+            icon={<ImageIcon />} 
+            label="Photopea" 
           />
           <ToolButton isMobile active={false} onClick={() => { setMode('select'); deleteObject(); }} icon={<Trash2 />} label="Xóa lớp" className="text-rose-400" />
         </div>
