@@ -36,7 +36,9 @@ import {
   GripVertical,
   ZoomIn,
   ZoomOut,
-  Maximize
+  Maximize,
+  SquareDashed,
+  Wand2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { Cropper, ReactCropperElement } from 'react-cropper';
@@ -63,7 +65,14 @@ interface PhotoEditorProps {
   isMobile?: boolean;
 }
 
-type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop';
+type EditorMode = 'select' | 'brush' | 'text' | 'rect' | 'circle' | 'triangle' | 'eraser' | 'crop' | 'marquee';
+
+interface SelectionArea {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
 
 interface ExportSettings {
   format: 'png' | 'jpeg' | 'pdf';
@@ -91,6 +100,8 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
   const [isProcessing, setIsProcessing] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
   const [layers, setLayers] = useState<fabric.Object[]>([]);
+  const [activeSelection, setActiveSelection] = useState<SelectionArea | null>(null);
+  const selectionRectRef = useRef<fabric.Rect | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [originalSize, setOriginalSize] = useState({ width: 0, height: 0 });
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -257,7 +268,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       opt.e.stopPropagation();
     });
 
-    // Handle Panning
+    // Handle Panning and Marquee
     canvas.on('mouse:down', (opt) => {
       const evt = opt.e as any;
       if (evt.altKey === true) {
@@ -265,6 +276,38 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         (canvas as any).selection = false;
         (canvas as any).lastPosX = evt.clientX;
         (canvas as any).lastPosY = evt.clientY;
+        return;
+      }
+
+      if (mode === 'marquee') {
+        const pointer = canvas.getPointer(opt.e);
+        const startX = pointer.x;
+        const startY = pointer.y;
+
+        // Remove old selection rect
+        if (selectionRectRef.current) {
+          canvas.remove(selectionRectRef.current);
+        }
+
+        const rect = new fabric.Rect({
+          left: startX,
+          top: startY,
+          width: 0,
+          height: 0,
+          fill: 'rgba(99, 102, 241, 0.2)',
+          stroke: '#6366f1',
+          strokeWidth: 1,
+          strokeDashArray: [5, 5],
+          selectable: false,
+          hoverCursor: 'crosshair',
+          name: 'SelectionRect'
+        });
+
+        selectionRectRef.current = rect;
+        canvas.add(rect);
+        (canvas as any).isSelecting = true;
+        (canvas as any).selectionStartX = startX;
+        (canvas as any).selectionStartY = startY;
       }
     });
 
@@ -278,13 +321,43 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         (canvas as any).lastPosX = e.clientX;
         (canvas as any).lastPosY = e.clientY;
         setVpt([...vpt]);
+      } else if ((canvas as any).isSelecting && mode === 'marquee' && selectionRectRef.current) {
+        const pointer = canvas.getPointer(opt.e);
+        const rect = selectionRectRef.current;
+        const startX = (canvas as any).selectionStartX;
+        const startY = (canvas as any).selectionStartY;
+
+        const left = Math.min(startX, pointer.x);
+        const top = Math.min(startY, pointer.y);
+        const width = Math.abs(startX - pointer.x);
+        const height = Math.abs(startY - pointer.y);
+
+        rect.set({ left, top, width, height });
+        canvas.renderAll();
       }
     });
 
     canvas.on('mouse:up', () => {
-      canvas.setViewportTransform(canvas.viewportTransform!);
-      (canvas as any).isDragging = false;
-      (canvas as any).selection = true;
+      if ((canvas as any).isDragging) {
+        canvas.setViewportTransform(canvas.viewportTransform!);
+        (canvas as any).isDragging = false;
+        canvas.selection = true;
+      } else if ((canvas as any).isSelecting && mode === 'marquee' && selectionRectRef.current) {
+        (canvas as any).isSelecting = false;
+        const rect = selectionRectRef.current;
+        if (rect.width! > 5 && rect.height! > 5) {
+          setActiveSelection({
+            left: rect.left!,
+            top: rect.top!,
+            width: rect.width!,
+            height: rect.height!
+          });
+        } else {
+          canvas.remove(rect);
+          selectionRectRef.current = null;
+          setActiveSelection(null);
+        }
+      }
     });
 
     return () => {
@@ -304,7 +377,17 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
     const canvas = fabricCanvas.current;
     if (!canvas) return;
 
+    if (mode !== 'marquee') {
+      if (selectionRectRef.current) {
+        canvas.remove(selectionRectRef.current);
+        selectionRectRef.current = null;
+      }
+      setActiveSelection(null);
+    }
+
     canvas.isDrawingMode = mode === 'brush' || mode === 'eraser';
+    canvas.selection = mode === 'select';
+    canvas.hoverCursor = mode === 'marquee' ? 'crosshair' : 'default';
     
     if (canvas.isDrawingMode) {
       if (mode === 'brush') {
@@ -603,6 +686,122 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       saveHistory();
       updateLayers();
     });
+  };
+
+  const handleContentAwareFill = async () => {
+    if (!activeSelection || !fabricCanvas.current) return;
+    
+    setIsProcessing(true);
+    const canvas = fabricCanvas.current;
+    
+    try {
+      // Find the main image layer (background or the largest image)
+      const objects = canvas.getObjects('image');
+      const mainImage = objects[0] as fabric.Image;
+      
+      if (!mainImage) {
+        setIsProcessing(false);
+        return;
+      }
+
+      // Create an offline buffer to process pixels
+      const tempCanvas = document.createElement('canvas');
+      const ctx = tempCanvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get context');
+
+      // Set dimensions to selection size
+      const { left, top, width, height } = activeSelection;
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+
+      // Draw original area with some context around it for sampling
+      const sampleMargin = 20;
+      const sampleLeft = Math.max(0, left - sampleMargin);
+      const sampleTop = Math.max(0, top - sampleMargin);
+      const sampleWidth = width + sampleMargin * 2;
+      const sampleHeight = height + sampleMargin * 2;
+
+      // Create a pattern or sample from surroundings
+      // For this implementation, we take the average of the pixels around the box 
+      // and fill with a gradient of those colors
+      
+      // Get colors from edges
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = canvas.width!;
+      sampleCanvas.height = canvas.height!;
+      const sctx = sampleCanvas.getContext('2d')!;
+      
+      // Hide selection rect before capturing
+      if (selectionRectRef.current) selectionRectRef.current.visible = false;
+      canvas.renderAll();
+      
+      sctx.drawImage(canvas.getElement(), 0, 0);
+      
+      // Sample top, bottom, left, right edges
+      const topData = sctx.getImageData(left, Math.max(0, top - 2), width, 1).data;
+      const bottomData = sctx.getImageData(left, Math.min(canvas.height! - 1, top + height + 1), width, 1).data;
+      const leftData = sctx.getImageData(Math.max(0, left - 2), top, 1, height).data;
+      const rightData = sctx.getImageData(Math.min(canvas.width! - 1, left + width + 1), top, 1, height).data;
+
+      // Draw into result canvas
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          
+          // Calculate weights based on distance to nearest edge
+          const wx1 = (width - x) / width;
+          const wx2 = x / width;
+          const wy1 = (height - y) / height;
+          const wy2 = y / height;
+
+          // Simple horizontal/vertical mix
+          const ri = x * 4;
+          const li = y * 4;
+          
+          // Mix colors from edges
+          data[i] = (topData[ri] * wy1 + bottomData[ri] * wy2 + leftData[li] * wx1 + rightData[li] * wx2) / 2;
+          data[i+1] = (topData[ri+1] * wy1 + bottomData[ri+1] * wy2 + leftData[li+1] * wx1 + rightData[li+1] * wx2) / 2;
+          data[i+2] = (topData[ri+2] * wy1 + bottomData[ri+2] * wy2 + leftData[li+2] * wx1 + rightData[li+2] * wx2) / 2;
+          data[i+3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+      
+      // Add a slight blur to the fill patch
+      ctx.filter = 'blur(2px)';
+      ctx.drawImage(tempCanvas, 0, 0);
+      ctx.filter = 'none';
+
+      // Create a fabric image from the patch
+      const dataUrl = tempCanvas.toDataURL();
+      const patch = await fabric.Image.fromURL(dataUrl);
+      patch.set({
+        left,
+        top,
+        name: 'AI Fill Patch',
+      });
+      
+      canvas.add(patch);
+      
+      // Clean up selection
+      if (selectionRectRef.current) {
+        canvas.remove(selectionRectRef.current);
+        selectionRectRef.current = null;
+      }
+      setActiveSelection(null);
+      setMode('select');
+      
+      saveHistory();
+      updateLayers();
+    } catch (err) {
+      console.error('Fill error:', err);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleAiDescribe = async () => {
@@ -966,6 +1165,14 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
             >
               <Sparkles className="w-5 h-5" />
             </button>
+            {activeSelection && (
+              <button 
+                onClick={handleContentAwareFill}
+                className="p-2 text-amber-400 active:bg-amber-500/20 rounded-lg animate-pulse"
+              >
+                <Wand2 className="w-5 h-5" />
+              </button>
+            )}
             <button 
               onClick={() => setShowExportDialog(true)}
               className="p-2 text-emerald-400 active:bg-emerald-500/20 rounded-lg"
@@ -1015,6 +1222,15 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
               <Sparkles className="w-4 h-4" />
               AI Gợi ý
             </button>
+            {activeSelection && (
+              <button 
+                onClick={handleContentAwareFill}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-amber-500/20 animate-in fade-in zoom-in duration-200"
+              >
+                <Wand2 className="w-4 h-4" />
+                Fill (AI)
+              </button>
+            )}
             <button 
               onClick={() => setShowExportDialog(true)}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-full text-sm font-medium transition-all shadow-lg shadow-emerald-500/20"
@@ -1031,6 +1247,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
         {!isMobile && (
           <div className="w-16 border-r border-slate-800 bg-slate-900 flex flex-col items-center py-6 gap-4">
             <ToolButton active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
+            <ToolButton active={mode === 'marquee'} onClick={() => setMode('marquee')} icon={<SquareDashed />} label="Vùng chọn" />
             <ToolButton active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
             <ToolButton active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
             <div className="w-8 h-px bg-slate-800 my-2" />
@@ -1411,6 +1628,7 @@ export const PhotoEditor: React.FC<PhotoEditorProps> = ({ file, onClose, onSave,
       {isMobile && (
         <div className="h-16 bg-slate-900 border-t border-slate-800 flex items-center px-1 overflow-x-auto no-scrollbar gap-1 shrink-0">
           <ToolButton isMobile active={mode === 'select'} onClick={() => setMode('select')} icon={<MousePointer2 />} label="Chọn" />
+          <ToolButton isMobile active={mode === 'marquee'} onClick={() => setMode('marquee')} icon={<SquareDashed />} label="Vùng chọn" />
           <ToolButton isMobile active={mode === 'brush'} onClick={() => setMode('brush')} icon={<Pencil />} label="Vẽ" />
           <ToolButton isMobile active={mode === 'eraser'} onClick={() => setMode('eraser')} icon={<Eraser />} label="Xóa" />
           <ToolButton isMobile active={false} onClick={() => insertImageInputRef.current?.click()} icon={<ImagePlus />} label="Ảnh" />
