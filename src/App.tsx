@@ -17,6 +17,7 @@ import {
   Scissors,
   Trash2,
   Pencil,
+  Mic,
   RefreshCw,
   Image as ImageIcon,
   X,
@@ -49,7 +50,9 @@ type ToolAction =
   | 'PHOTO_EDITOR'
   | 'PHOTO_EDITOR_MOBILE'
   | 'EXTRACT_TEXT_AI'
-  | 'PHOTOPEA';
+  | 'PHOTOPEA'
+  | 'AUDIO_TO_TEXT'
+  | 'CHANGE_DPI';
 
 interface Tool {
   id: ToolAction;
@@ -155,6 +158,22 @@ const TOOLS: Tool[] = [
     icon: <Pencil className="w-10 h-10 text-slate-700" />, 
     description: 'Mở trình chỉnh sửa ảnh chuyên nghiệp Photopea trong tab mới',
     accept: '*',
+    multiple: true
+  },
+  { 
+    id: 'CHANGE_DPI', 
+    title: 'Thay đổi DPI (PDF & Ảnh)', 
+    icon: <RefreshCw className="w-10 h-10 text-slate-700" />, 
+    description: 'Thay đổi mật độ điểm ảnh cho PDF hoặc Hình ảnh (72, 96, 150, 300, 600)',
+    accept: '.pdf,image/*,.heic,.heif,.jfif',
+    multiple: true
+  },
+  { 
+    id: 'AUDIO_TO_TEXT', 
+    title: 'Chuyển Audio thành Text', 
+    icon: <Mic className="w-10 h-10 text-slate-700" />, 
+    description: 'Sử dụng ứng dụng AI để chuyển đổi âm thanh thành văn bản',
+    accept: 'audio/*',
     multiple: true
   }
 ];
@@ -679,6 +698,106 @@ export default function App() {
           break;
         }
 
+        case 'CHANGE_DPI': {
+          if (!toolInput && !overrideValue) {
+            setToolInput({
+              action,
+              files: processedFiles,
+              value: '300',
+              type: 'select',
+              options: [
+                { label: '72 DPI (Thấp)', value: '72' },
+                { label: '96 DPI (Mặc định)', value: '96' },
+                { label: '150 DPI (Trung bình)', value: '150' },
+                { label: '300 DPI (Cao)', value: '300' },
+                { label: '600 DPI (Rất cao)', value: '600' }
+              ]
+            });
+            setStatus(null);
+            return;
+          }
+          
+          const targetDpi = parseInt(overrideValue || toolInput?.value || '300');
+          setStatus({ message: `🔄 Đang thay đổi DPI sang ${targetDpi}...`, type: 'loading' });
+          
+          const zip = new JSZip();
+          let useZip = processedFiles.length > 1;
+
+          for (let f = 0; f < processedFiles.length; f++) {
+            const file = processedFiles[f];
+            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+            setStatus({ message: `Đang xử lý tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
+            
+            if (isPdf) {
+              const arrayBuffer = await file.arrayBuffer();
+              const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+              const pdf = await loadingTask.promise;
+              const numPages = pdf.numPages;
+              const pdfDoc = await PDFDocument.create();
+              
+              for (let i = 1; i <= numPages; i++) {
+                const page = await pdf.getPage(i);
+                const viewport = page.getViewport({ scale: targetDpi / 72 }); 
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                if (!context) continue;
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                await page.render({ canvasContext: context, viewport: viewport } as any).promise;
+                
+                const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+                if (blob) {
+                  const imgBuffer = await blob.arrayBuffer();
+                  const image = await pdfDoc.embedJpg(imgBuffer);
+                  const scale = 72 / targetDpi;
+                  const width = image.width * scale;
+                  const height = image.height * scale;
+                  const newPage = pdfDoc.addPage([width, height]);
+                  newPage.drawImage(image, { x: 0, y: 0, width, height });
+                }
+                if (numPages > 1) {
+                  setStatus({ message: `Đang xử lý PDF ${f + 1}: ${i}/${numPages} trang...`, type: 'loading' });
+                }
+              }
+              const pdfBytes = await pdfDoc.save();
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_${targetDpi}dpi.pdf`, pdfBytes);
+            } else {
+              // Image handling
+              const bitmap = await createImageBitmap(file);
+              const canvas = document.createElement('canvas');
+              const ctx = canvas.getContext('2d');
+              if (!ctx) continue;
+
+              // We'll treat the original image as 72 DPI and upscale it to target DPI
+              // This is a common way to "change DPI" for print-ready assets when starting from low-res
+              const scale = targetDpi / 72;
+              canvas.width = bitmap.width * scale;
+              canvas.height = bitmap.height * scale;
+              ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+              
+              const imgBlob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+              if (imgBlob) {
+                zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.png`, imgBlob);
+              }
+            }
+          }
+
+          if (useZip) {
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, `changed_dpi_files_${targetDpi}.zip`);
+          } else {
+            const firstFileKey = Object.keys(zip.files)[0];
+            const fileData = await zip.file(firstFileKey)?.async('blob');
+            if (fileData) {
+              downloadBlob(fileData, firstFileKey);
+            }
+          }
+          
+          setStatus({ message: `✅ Đã thay đổi DPI sang ${targetDpi} thành công!`, type: 'success' });
+          setToolInput(null);
+          break;
+        }
+
         case 'PHOTO_EDITOR':
         case 'PHOTO_EDITOR_MOBILE': {
           const file = processedFiles[0];
@@ -911,6 +1030,8 @@ export default function App() {
                   window.open('https://ai.studio/apps/e8acfb7a-f587-425d-a822-0bbecfb2be30?fullscreenApplet=true', '_blank');
                 } else if (tool.id === 'PHOTOPEA') {
                   window.open('https://www.photopea.com/', '_blank');
+                } else if (tool.id === 'AUDIO_TO_TEXT') {
+                  window.open('https://ai.studio/apps/d046bb29-3951-4c90-8ef4-df4d51fbb84f?fullscreenApplet=true', '_blank');
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
