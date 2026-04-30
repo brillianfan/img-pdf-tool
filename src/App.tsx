@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
+  Briefcase,
   FileImage, 
   FileText, 
   Globe, 
@@ -953,13 +954,18 @@ export default function App() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
         >
-          <h1 className="text-5xl font-bold tracking-tight mb-4 text-slate-800">
-            Tool Văn Phòng - v.2.0.2
-          </h1>
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
+              <Briefcase className="w-7 h-7 text-white" />
+            </div>
+            <h1 className="text-5xl font-extrabold tracking-tight text-slate-800">
+              Brilliant<span className="text-blue-600 italic">Office</span> Tool
+            </h1>
+          </div>
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
-            Chọn chất lượng nén, DPI và kéo thả tệp để xử lý
+            Bộ công cụ văn phòng thông minh cho PDF và Hình ảnh
           </p>
-          <p className="text-sm text-slate-400 mt-2">by Brillian Pham</p>
+          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.2 • Pro Edition</p>
         </motion.div>
       </header>
 
@@ -1229,7 +1235,7 @@ export default function App() {
                 <div>
                   <h2 className="text-2xl font-bold text-slate-800 mb-2">Hỗ trợ khách hàng</h2>
                   <p className="text-slate-500 leading-relaxed">
-                    Chào mừng bạn đến với <strong>Tool Văn Phòng</strong>. 
+                    Chào mừng bạn đến với <strong>Brilliant Office Tool</strong>. 
                     Đây là bộ công cụ xử lý PDF và hình ảnh chuyên nghiệp, nhanh chóng và bảo mật.
                   </p>
                 </div>
