@@ -963,7 +963,7 @@ export default function App() {
             </h1>
           </div>
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
-            Bộ công cụ văn phòng thông minh cho PDF và Hình ảnh
+            Bộ công cụ thông minh cho văn phòng
           </p>
           <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.2 • Pro Edition</p>
         </motion.div>
