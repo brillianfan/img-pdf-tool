@@ -68,7 +68,7 @@ interface Tool {
 const TOOLS: Tool[] = [
   { 
     id: 'IMG_TO_PDF', 
-    title: 'Nén và chuyển sang PDF', 
+    title: 'Ảnh sang PDF', 
     icon: <FileText className="w-10 h-10 text-slate-700" />, 
     description: 'Chuyển đổi và nén ảnh sang định dạng PDF',
     accept: 'image/*,.heic,.heif,.jfif',
@@ -100,7 +100,7 @@ const TOOLS: Tool[] = [
   },
   { 
     id: 'CONVERT_IMAGE', 
-    title: 'Chuyển sang Ảnh (JPG/PNG)', 
+    title: 'Đổi định dạng Ảnh (JPG/PNG)', 
     icon: <ImageIcon className="w-10 h-10 text-slate-700" />, 
     description: 'Chuyển đổi qua lại giữa JPG và PNG',
     accept: 'image/*,.heic,.heif,.jfif',
