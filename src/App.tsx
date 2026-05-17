@@ -34,6 +34,7 @@ import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { PhotoEditor } from './components/PhotoEditor';
+import { changeDpi } from './lib/dpiUtils';
 // Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
@@ -736,10 +737,8 @@ export default function App() {
               const numPages = pdf.numPages;
               const pdfDoc = await PDFDocument.create();
               
-              // To keep file size close to original, we use a fixed moderate render scale (e.g. 2.0 = 144 DPI)
-              // but we embed it into the PDF with the target DPI dimension logic 
-              // to "pretend" it's high res without massive pixel bloat.
-              const renderScale = targetDpi <= 150 ? 1.5 : 2.5; 
+              // Actual rendering at requested target DPI
+              const renderScale = targetDpi / 72; 
               
               for (let i = 1; i <= numPages; i++) {
                 const page = await pdf.getPage(i);
@@ -752,27 +751,19 @@ export default function App() {
                 canvas.width = viewport.width;
                 await page.render({ canvasContext: context, viewport: viewport } as any).promise;
                 
-                // Use a quality that balances size and clarity
-                const quality = targetDpi > 300 ? 0.8 : 0.9;
+                // Adjust JPEG quality to manage file size increase from higher resolution
+                const quality = targetDpi >= 300 ? 0.76 : 0.86;
                 const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
                 
                 if (blob) {
-                  const imgBuffer = await blob.arrayBuffer();
+                  // Inject DPI metadata into the JPEG blob
+                  const dpiBlob = await changeDpi(blob, targetDpi);
+                  const imgBuffer = await dpiBlob.arrayBuffer();
                   const image = await pdfDoc.embedJpg(imgBuffer);
                   
-                  // Dimensions in points = (pixels * 72) / DPI
-                  const width = (image.width * 72) / (renderScale * (targetDpi / (72 * renderScale)));
-                  // Simplified: width = pixels * (72 / targetDpi)
-                  // But since image.width is at renderScale, we need to adjust:
-                  const targetWidth = (image.width / renderScale) * (72 / 72); // This keeps physical size
-                  
-                  // Actually, to change DPI while keeping physical size, we don't change dimensions in PDF.
-                  // The "DPI" of an image in PDF is effectively pixels / physical size.
-                  // So if we render at renderScale pixels and embed at original physical size, 
-                  // the internal DPI is (renderScale * 72).
-                  
-                  const originalWidth = page.getViewport({ scale: 1 }).width;
-                  const originalHeight = page.getViewport({ scale: 1 }).height;
+                  const originalViewport = page.getViewport({ scale: 1 });
+                  const originalWidth = originalViewport.width;
+                  const originalHeight = originalViewport.height;
                   
                   const newPage = pdfDoc.addPage([originalWidth, originalHeight]);
                   newPage.drawImage(image, { 
@@ -789,23 +780,26 @@ export default function App() {
               const pdfBytes = await pdfDoc.save();
               zip.file(`${file.name.replace(/\.pdf$/i, '')}_${targetDpi}dpi.pdf`, pdfBytes);
             } else {
-              // Image handling - Preserve dimensions to keep file size
+              // Image handling: Focus on metadata injection to satisfy tools reading DPI fields
               const bitmap = await createImageBitmap(file);
               const canvas = document.createElement('canvas');
               const ctx = canvas.getContext('2d');
               if (!ctx) continue;
 
-              // Do NOT scale the pixels if the goal is to keep original file size
+              // Keep pixels same as user asked to "preserve file size" 
+              // We only update the logical resolution metadata
               canvas.width = bitmap.width;
               canvas.height = bitmap.height;
               ctx.drawImage(bitmap, 0, 0);
               
-              // We'll output as JPEG with original quality to stay close to source size
-              // PNGs are often much larger than source JPEGs
-              const imgBlob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+              const format = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+              const imgBlob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, format, 0.94));
+              
               if (imgBlob) {
-                // If it was originally a PNG/HEIC, changing to JPEG already changes size, but 0.92 is usually safe
-                zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.jpg`, imgBlob);
+                // Update DPI metadata in the binary header
+                const dpiBlob = await changeDpi(imgBlob, targetDpi);
+                const ext = format === 'image/png' ? 'png' : 'jpg';
+                zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.${ext}`, dpiBlob);
               }
             }
           }

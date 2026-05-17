@@ -41,6 +41,7 @@
     "multer": "^2.1.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.5.207",
+    "piexifjs": "^1.0.6",
     "react": "^19.0.0",
     "react-cropper": "^2.3.3",
     "react-dom": "^19.0.0",
