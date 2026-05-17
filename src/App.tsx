@@ -275,7 +275,8 @@ export default function App() {
   };
 
   const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValues?: { value?: string, quality?: number, dpi?: number }) => {
-    if (files.length === 0) return;
+    const filesArray = Array.from(files);
+    if (filesArray.length === 0) return;
 
     // Determine if we need to show a settings modal before processing
     const needsSettings = ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(action);
@@ -285,7 +286,7 @@ export default function App() {
       if (needsSettings) {
         setToolInput({
           action,
-          files,
+          files: filesArray,
           quality: globalQuality,
           dpi: globalDpi,
           value: action === 'CONVERT_IMAGE' ? 'jpg' : (action === 'CHANGE_DPI' ? '300' : ''),
@@ -305,7 +306,7 @@ export default function App() {
       } else if (multiStepTools.includes(action)) {
         setToolInput({
           action,
-          files,
+          files: filesArray,
           quality: globalQuality,
           dpi: globalDpi,
           value: '',
@@ -320,10 +321,13 @@ export default function App() {
     const currentDpi = overrideValues?.dpi ?? toolInput?.dpi ?? globalDpi;
     const currentValue = overrideValues?.value ?? toolInput?.value ?? '';
 
+    // If coming from modal, close it now so status is visible and process starts
+    setToolInput(null);
+
     // Validate file types for PDF tools
     const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES'];
     if (pdfTools.includes(action)) {
-      const nonPdfFiles = Array.from(files).filter(f => !f.name.toLowerCase().endsWith('.pdf'));
+      const nonPdfFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
       if (nonPdfFiles.length > 0) {
         setStatus({ message: `❌ Vui lòng chỉ chọn tệp PDF cho chức năng này.`, type: 'error' });
         return;
@@ -333,9 +337,9 @@ export default function App() {
     setStatus({ message: 'Đang chuẩn bị...', type: 'loading' });
 
     try {
-      const processedFiles = await Promise.all(Array.from(files).map(f => convertHeicToJpg(f)));
+      const processedFiles = await Promise.all(filesArray.map(f => convertHeicToJpg(f)));
       
-      setStatus({ message: 'Đang xử lý...', type: 'loading' });
+      setStatus({ message: 'Đang khởi tạo trình xử lý...', type: 'loading' });
 
       switch (action) {
         case 'PDF_TO_IMG': {
@@ -514,7 +518,10 @@ export default function App() {
 
         case 'MERGE_PDF': {
           const mergedPdf = await PDFDocument.create();
-          for (const file of Array.from(toolInput?.files || processedFiles) as File[]) {
+          const targetFiles = filesArray.length > 0 ? filesArray : processedFiles;
+          for (let i = 0; i < targetFiles.length; i++) {
+            const file = targetFiles[i];
+            setStatus({ message: `Đang gộp PDF: ${i + 1}/${targetFiles.length}...`, type: 'loading' });
             const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
             copiedPages.forEach((page) => mergedPdf.addPage(page));
@@ -542,10 +549,12 @@ export default function App() {
 
         case 'DELETE_PAGES':
         case 'EXTRACT_PAGES': {
-          const pagesInput = currentValue || toolInput?.value || '';
+          const pagesInput = currentValue || '';
           const pageIndices = parsePageInput(pagesInput);
           const zip = new JSZip();
-          for (const file of Array.from(toolInput?.files || processedFiles) as File[]) {
+          const targetFiles = filesArray.length > 0 ? filesArray : processedFiles;
+          for (const file of targetFiles) {
+            setStatus({ message: `Đang xử lý PDF: ${file.name}...`, type: 'loading' });
             const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const newPdf = await PDFDocument.create();
             const indices = action === 'DELETE_PAGES' 
@@ -559,9 +568,11 @@ export default function App() {
           }
           if (Object.keys(zip.files).length > 1) {
             downloadBlob(await zip.generateAsync({ type: 'blob' }), 'processed_pdfs.zip');
-          } else {
+          } else if (Object.keys(zip.files).length === 1) {
             const key = Object.keys(zip.files)[0];
             downloadBlob(await zip.file(key)!.async('blob'), key);
+          } else {
+            throw new Error('Không có trang nào được chọn hoặc kết quả trống.');
           }
           setStatus({ message: '✅ Đã xử lý thành công!', type: 'success' });
           break;
@@ -577,10 +588,11 @@ export default function App() {
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
-      setToolInput(null);
+      // Success - toolInput already nullified at start of processing
     } catch (error: any) {
       console.error(error);
       setStatus({ message: `❌ ${error.message || 'Có lỗi xảy ra.'}`, type: 'error' });
+      setToolInput(null); // Ensure modal closes even on error if it was open
     }
   };
 
@@ -909,12 +921,12 @@ export default function App() {
                   >
                     Hủy
                   </button>
-                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select') && (
+                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select' || toolInput.type === 'settings') && (
                     <button
                       onClick={() => handleProcess(toolInput.files, toolInput.action)}
                       className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
                     >
-                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : 'Tiếp tục'}
+                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : 'Xác nhận'}
                     </button>
                   )}
                 </div>
