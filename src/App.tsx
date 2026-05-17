@@ -181,24 +181,25 @@ const TOOLS: Tool[] = [
 ];
 
 export default function App() {
-  const [quality, setQuality] = useState(85);
-  const [dpi, setDpi] = useState(300);
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'loading' } | null>(null);
   const [isDragging, setIsDragging] = useState<ToolAction | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [showSupport, setShowSupport] = useState(false);
-  const [showQualityMenu, setShowQualityMenu] = useState(false);
-  const [showDpiMenu, setShowDpiMenu] = useState(false);
   const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
   const [isMobileEditor, setIsMobileEditor] = useState(false);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
-    value: string;
-    type: 'text' | 'select' | 'reorder';
+    value?: string;
+    quality: number;
+    dpi: number;
+    type: 'text' | 'select' | 'reorder' | 'settings';
     options?: { label: string; value: string }[];
   } | null>(null);
+
+  const [globalQuality, setGlobalQuality] = useState(85);
+  const [globalDpi, setGlobalDpi] = useState(300);
 
   const convertHeicToJpg = async (file: File): Promise<File> => {
     if (file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif')) {
@@ -230,8 +231,8 @@ export default function App() {
   };
 
   const resetSettings = () => {
-    setQuality(85);
-    setDpi(300);
+    setGlobalQuality(85);
+    setGlobalDpi(300);
     setStatus({ message: 'Đã khôi phục cài đặt gốc!', type: 'success' });
     setTimeout(() => setStatus(null), 2000);
   };
@@ -254,20 +255,70 @@ export default function App() {
         ctx.drawImage(img, 0, 0);
         
         canvas.toBlob(
-          (blob) => {
-            if (blob) resolve(blob);
-            else reject(new Error('Canvas toBlob failed'));
+          async (blob) => {
+            if (blob) {
+              const dpiBlob = await changeDpi(blob, dpi);
+              resolve(dpiBlob);
+            } else {
+              reject(new Error('Canvas toBlob failed'));
+            }
           },
           format,
           quality / 100
         );
       };
-      img.onerror = () => reject(new Error('Could not load image'));
+      img.onerror = () => {
+        URL.revokeObjectURL(img.src);
+        reject(new Error('Could not load image'));
+      };
     });
   };
 
-  const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValue?: string) => {
+  const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValues?: { value?: string, quality?: number, dpi?: number }) => {
     if (files.length === 0) return;
+
+    // Determine if we need to show a settings modal before processing
+    const needsSettings = ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(action);
+    const multiStepTools = ['MERGE_PDF', 'DELETE_PAGES', 'EXTRACT_PAGES'];
+    
+    if (!toolInput && !overrideValues) {
+      if (needsSettings) {
+        setToolInput({
+          action,
+          files,
+          quality: globalQuality,
+          dpi: globalDpi,
+          value: action === 'CONVERT_IMAGE' ? 'jpg' : (action === 'CHANGE_DPI' ? '300' : ''),
+          type: 'settings',
+          options: action === 'CONVERT_IMAGE' ? [
+            { label: 'Sang JPG', value: 'jpg' },
+            { label: 'Sang PNG', value: 'png' }
+          ] : (action === 'CHANGE_DPI' ? [
+            { label: '72 DPI', value: '72' },
+            { label: '96 DPI', value: '96' },
+            { label: '150 DPI', value: '150' },
+            { label: '300 DPI', value: '300' },
+            { label: '600 DPI', value: '600' }
+          ] : undefined)
+        });
+        return;
+      } else if (multiStepTools.includes(action)) {
+        setToolInput({
+          action,
+          files,
+          quality: globalQuality,
+          dpi: globalDpi,
+          value: '',
+          type: action === 'MERGE_PDF' ? 'reorder' : 'text'
+        });
+        return;
+      }
+    }
+
+    // Capture settings from toolInput or override or global defaults
+    const currentQuality = overrideValues?.quality ?? toolInput?.quality ?? globalQuality;
+    const currentDpi = overrideValues?.dpi ?? toolInput?.dpi ?? globalDpi;
+    const currentValue = overrideValues?.value ?? toolInput?.value ?? '';
 
     // Validate file types for PDF tools
     const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES'];
@@ -282,9 +333,6 @@ export default function App() {
     setStatus({ message: 'Đang chuẩn bị...', type: 'loading' });
 
     try {
-      const formData = new FormData();
-      
-      // Pre-process HEIC files
       const processedFiles = await Promise.all(Array.from(files).map(f => convertHeicToJpg(f)));
       
       setStatus({ message: 'Đang xử lý...', type: 'loading' });
@@ -292,546 +340,244 @@ export default function App() {
       switch (action) {
         case 'PDF_TO_IMG': {
           const zip = new JSZip();
-          let totalProcessedPages = 0;
-          
           for (let f = 0; f < processedFiles.length; f++) {
             const file = processedFiles[f];
-            setStatus({ message: `Đang chuẩn bị tệp PDF ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
             const arrayBuffer = await file.arrayBuffer();
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
             const numPages = pdf.numPages;
             const padding = numPages.toString().length;
-            
             const fileFolder = processedFiles.length > 1 ? zip.folder(file.name.replace(/\.pdf$/i, '')) : zip;
             
             for (let i = 1; i <= numPages; i++) {
               const page = await pdf.getPage(i);
-              const viewport = page.getViewport({ scale: dpi / 72 }); 
+              const viewport = page.getViewport({ scale: currentDpi / 72 }); 
               const canvas = document.createElement('canvas');
               const context = canvas.getContext('2d');
               if (!context) continue;
               canvas.height = viewport.height;
               canvas.width = viewport.width;
               await page.render({ canvasContext: context, viewport: viewport } as any).promise;
-              const imgData = canvas.toDataURL('image/jpeg', quality / 100);
-              const pageNum = i.toString().padStart(padding, '0');
-              fileFolder?.file(`page_${pageNum}.jpg`, imgData.split(',')[1], { base64: true });
-              totalProcessedPages++;
+              
+              const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', currentQuality / 100));
+              if (blob) {
+                const dpiBlob = await changeDpi(blob, currentDpi);
+                const pageNum = i.toString().padStart(padding, '0');
+                fileFolder?.file(`page_${pageNum}.jpg`, await dpiBlob.arrayBuffer());
+              }
               setStatus({ message: `Đang xử lý PDF ${f + 1}/${processedFiles.length}: ${i}/${numPages} trang...`, type: 'loading' });
             }
           }
-          
           const content = await zip.generateAsync({ type: 'blob' });
-          const zipName = processedFiles.length > 1 ? 'converted_pdfs_images.zip' : `${processedFiles[0].name.replace(/\.pdf$/i, '')}_images.zip`;
-          downloadBlob(content, zipName);
+          downloadBlob(content, processedFiles.length > 1 ? 'converted_pdfs_images.zip' : `${processedFiles[0].name.replace(/\.pdf$/i, '')}_images.zip`);
           setStatus({ message: '✅ Đã tách trang thành công!', type: 'success' });
           break;
         }
 
         case 'IMG_TO_PDF': {
-          setStatus({ message: '🔄 Đang chuẩn bị ảnh...', type: 'loading' });
           const pdfDoc = await PDFDocument.create();
-          
           for (let i = 0; i < processedFiles.length; i++) {
             const file = processedFiles[i];
             setStatus({ message: `Đang nén và gộp ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
             try {
-              const compressedBlob = await compressImage(file, quality, dpi);
+              const compressedBlob = await compressImage(file, currentQuality, currentDpi);
               const arrayBuffer = await compressedBlob.arrayBuffer();
               const image = await pdfDoc.embedJpg(arrayBuffer);
-              
-              const scale = 72 / dpi;
+              const scale = 72 / currentDpi;
               const width = image.width * scale;
               const height = image.height * scale;
-              
               const page = pdfDoc.addPage([width, height]);
-              page.drawImage(image, {
-                x: 0,
-                y: 0,
-                width: width,
-                height: height,
-              });
+              page.drawImage(image, { x: 0, y: 0, width, height });
             } catch (err) {
-              console.error('Error embedding image:', err);
-              // Try original if compression fails
-              try {
-                const arrayBuffer = await file.arrayBuffer();
-                let image;
-                if (file.type === 'image/png') {
-                  image = await pdfDoc.embedPng(arrayBuffer);
-                } else {
-                  image = await pdfDoc.embedJpg(arrayBuffer);
-                }
-                const scale = 72 / dpi;
-                const width = image.width * scale;
-                const height = image.height * scale;
-                const page = pdfDoc.addPage([width, height]);
-                page.drawImage(image, { x: 0, y: 0, width, height });
-              } catch (innerErr) {
-                console.error('Failed to embed original image:', innerErr);
-              }
+              const arrayBuffer = await file.arrayBuffer();
+              let image = file.type === 'image/png' ? await pdfDoc.embedPng(arrayBuffer) : await pdfDoc.embedJpg(arrayBuffer);
+              const scale = 72 / currentDpi;
+              const width = image.width * scale;
+              const height = image.height * scale;
+              const page = pdfDoc.addPage([width, height]);
+              page.drawImage(image, { x: 0, y: 0, width, height });
             }
           }
-          
           const pdfBytes = await pdfDoc.save();
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          downloadBlob(blob, 'converted.pdf');
+          downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), 'converted.pdf');
           setStatus({ message: '✅ Đã tạo PDF thành công!', type: 'success' });
-          break;
-        }
-        case 'MERGE_PDF': {
-          if (processedFiles.length < 2) {
-            throw new Error('Vui lòng chọn ít nhất 2 tệp PDF để gộp.');
-          }
-          
-          if (!toolInput) {
-            setToolInput({
-              action,
-              files: processedFiles,
-              value: '',
-              type: 'reorder'
-            });
-            setStatus(null);
-            return;
-          }
-          
-          setStatus({ message: '🔄 Đang gộp các tệp PDF...', type: 'loading' });
-          const mergedPdf = await PDFDocument.create();
-          const filesToMerge = Array.from(toolInput.files) as File[];
-          
-          for (const file of filesToMerge) {
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-            copiedPages.forEach((page) => mergedPdf.addPage(page));
-          }
-          
-          const pdfBytes = await mergedPdf.save();
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          downloadBlob(blob, 'merged.pdf');
-          setStatus({ message: '✅ Đã gộp PDF thành công!', type: 'success' });
-          setToolInput(null);
-          break;
-        }
-
-        case 'SPLIT_PDF': {
-          setStatus({ message: '🔄 Đang tách các trang PDF...', type: 'loading' });
-          const zip = new JSZip();
-          
-          for (let f = 0; f < processedFiles.length; f++) {
-            const file = processedFiles[f];
-            setStatus({ message: `Đang xử lý tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
-            
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const pageCount = pdf.getPageCount();
-            const padding = pageCount.toString().length;
-            
-            const fileFolder = processedFiles.length > 1 ? zip.folder(file.name.replace(/\.pdf$/i, '')) : zip;
-            
-            for (let i = 0; i < pageCount; i++) {
-              const newPdf = await PDFDocument.create();
-              const [page] = await newPdf.copyPages(pdf, [i]);
-              newPdf.addPage(page);
-              const pdfBytes = await newPdf.save();
-              const pageNum = (i + 1).toString().padStart(padding, '0');
-              fileFolder?.file(`page_${pageNum}.pdf`, pdfBytes);
-            }
-          }
-          
-          const zipBlob = await zip.generateAsync({ type: 'blob' });
-          const zipName = processedFiles.length > 1 ? 'split_pdfs.zip' : `${processedFiles[0].name.replace(/\.pdf$/i, '')}_split.zip`;
-          downloadBlob(zipBlob, zipName);
-          setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
-          break;
-        }
-
-        case 'DELETE_PAGES': {
-          if (!toolInput && !overrideValue) {
-            setToolInput({
-              action,
-              files: processedFiles,
-              value: '',
-              type: 'text'
-            });
-            setStatus(null);
-            return;
-          }
-          const pagesInput = overrideValue || toolInput?.value || '';
-          const pageIndices = parsePageInput(pagesInput);
-          if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
-          
-          setStatus({ message: '🔄 Đang xóa các trang PDF...', type: 'loading' });
-          const zip = new JSZip();
-          const filesToDeleteFrom = Array.from(toolInput?.files || processedFiles) as File[];
-
-          for (let f = 0; f < filesToDeleteFrom.length; f++) {
-            const file = filesToDeleteFrom[f];
-            setStatus({ message: `Đang xử lý tệp ${f + 1}/${filesToDeleteFrom.length}: ${file.name}...`, type: 'loading' });
-            
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const newPdf = await PDFDocument.create();
-            const indicesToKeep = pdf.getPageIndices().filter(i => !pageIndices.includes(i));
-            
-            if (indicesToKeep.length === 0) {
-              continue; // Skip if all pages deleted
-            }
-
-            const copiedPages = await newPdf.copyPages(pdf, indicesToKeep);
-            copiedPages.forEach(page => newPdf.addPage(page));
-            const pdfBytes = await newPdf.save();
-            zip.file(`${file.name.replace(/\.pdf$/i, '')}_modified.pdf`, pdfBytes);
-          }
-          
-          if (filesToDeleteFrom.length > 1) {
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, 'deleted_pages_pdfs.zip');
-          } else {
-            const firstFileKey = Object.keys(zip.files)[0];
-            const pdfBytes = await zip.file(firstFileKey)?.async('uint8array');
-            if (pdfBytes) {
-              const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-              downloadBlob(blob, firstFileKey);
-            }
-          }
-          
-          setStatus({ message: '✅ Đã xóa trang thành công!', type: 'success' });
-          setToolInput(null);
-          break;
-        }
-
-        case 'EXTRACT_PAGES': {
-          if (!toolInput && !overrideValue) {
-            setToolInput({
-              action,
-              files: processedFiles,
-              value: '',
-              type: 'text'
-            });
-            setStatus(null);
-            return;
-          }
-          const pagesInput = overrideValue || toolInput?.value || '';
-          const pageIndices = parsePageInput(pagesInput);
-          if (pageIndices.length === 0) throw new Error('Vui lòng nhập số trang hợp lệ (ví dụ: 1, 2-4)');
-
-          setStatus({ message: '🔄 Đang trích xuất các trang PDF...', type: 'loading' });
-          const zip = new JSZip();
-          const filesToExtractFrom = Array.from(toolInput?.files || processedFiles) as File[];
-
-          for (let f = 0; f < filesToExtractFrom.length; f++) {
-            const file = filesToExtractFrom[f];
-            setStatus({ message: `Đang xử lý tệp ${f + 1}/${filesToExtractFrom.length}: ${file.name}...`, type: 'loading' });
-            
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const newPdf = await PDFDocument.create();
-            const totalPages = pdf.getPageCount();
-            const validIndices = pageIndices.filter(i => i >= 0 && i < totalPages);
-            
-            if (validIndices.length === 0) {
-              continue;
-            }
-
-            const copiedPages = await newPdf.copyPages(pdf, validIndices);
-            copiedPages.forEach(page => newPdf.addPage(page));
-            const pdfBytes = await newPdf.save();
-            zip.file(`${file.name.replace(/\.pdf$/i, '')}_extracted.pdf`, pdfBytes);
-          }
-          
-          if (filesToExtractFrom.length > 1) {
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, 'extracted_pages_pdfs.zip');
-          } else {
-            const firstFileKey = Object.keys(zip.files)[0];
-            const pdfBytes = await zip.file(firstFileKey)?.async('uint8array');
-            if (pdfBytes) {
-              const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-              downloadBlob(blob, firstFileKey);
-            }
-          }
-          
-          setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
-          setToolInput(null);
-          break;
-        }
-
-        case 'CONVERT_IMAGE': {
-          if (!toolInput && !overrideValue) {
-            setToolInput({
-              action,
-              files: processedFiles,
-              value: 'jpg',
-              type: 'select',
-              options: [
-                { label: 'Sang JPG', value: 'jpg' },
-                { label: 'Sang PNG', value: 'png' }
-              ]
-            });
-            setStatus(null);
-            return;
-          }
-          const format = overrideValue || toolInput?.value || 'jpg';
-          const targetFormat = format.toLowerCase() === 'jpg' ? 'jpeg' : 'png';
-          
-          console.log(`Processing CONVERT_IMAGE: format=${format}, files=${processedFiles.length}`);
-          
-          if (processedFiles.length > 1) {
-            setStatus({ message: '🔄 Đang chuyển đổi ảnh...', type: 'loading' });
-            const zip = new JSZip();
-            
-            for (let i = 0; i < processedFiles.length; i++) {
-              const file = processedFiles[i];
-              setStatus({ message: `Đang xử lý ảnh: ${i + 1}/${processedFiles.length}...`, type: 'loading' });
-              try {
-                const convertedBlob = await compressImage(file, quality, dpi, `image/${targetFormat}`);
-                const arrayBuffer = await convertedBlob.arrayBuffer();
-                const fileName = file.name.replace(/\.[^/.]+$/, "") + (format.toLowerCase() === 'jpg' ? '.jpg' : '.png');
-                zip.file(fileName, arrayBuffer);
-              } catch (err) {
-                console.error('Conversion error:', err);
-                const arrayBuffer = await file.arrayBuffer();
-                zip.file(file.name, arrayBuffer);
-              }
-            }
-            
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, 'converted_images.zip');
-          } else {
-            setStatus({ message: '🔄 Đang chuyển đổi ảnh...', type: 'loading' });
-            const file = processedFiles[0];
-            try {
-              const convertedBlob = await compressImage(file, quality, dpi, `image/${targetFormat}`);
-              const fileName = `converted.${format.toLowerCase()}`;
-              downloadBlob(convertedBlob, fileName);
-            } catch (err) {
-              console.error('Conversion error:', err);
-              downloadBlob(file, file.name);
-            }
-          }
-          
-          setStatus({ message: '✅ Đã chuyển đổi ảnh thành công!', type: 'success' });
-          setToolInput(null);
           break;
         }
 
         case 'COMPRESS_PDF': {
-          if (processedFiles.length > 1) {
-            setStatus({ message: '🔄 Đang nén hàng loạt PDF...', type: 'loading' });
-            const zip = new JSZip();
-            
-            for (let f = 0; f < processedFiles.length; f++) {
-              const file = processedFiles[f];
-              setStatus({ message: `Đang nén tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
-              
-              const arrayBuffer = await file.arrayBuffer();
-              const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-              const pdf = await loadingTask.promise;
-              const numPages = pdf.numPages;
-              const pdfDoc = await PDFDocument.create();
-              
-              for (let i = 1; i <= numPages; i++) {
-                const page = await pdf.getPage(i);
-                const viewport = page.getViewport({ scale: dpi / 72 }); 
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                if (!context) continue;
-                canvas.height = viewport.height;
-                canvas.width = viewport.width;
-                await page.render({ canvasContext: context, viewport: viewport } as any).promise;
-                
-                const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
-                if (blob) {
-                  const imgBuffer = await blob.arrayBuffer();
-                  const image = await pdfDoc.embedJpg(imgBuffer);
-                  const scale = 72 / dpi;
-                  const width = image.width * scale;
-                  const height = image.height * scale;
-                  const newPage = pdfDoc.addPage([width, height]);
-                  newPage.drawImage(image, { x: 0, y: 0, width, height });
-                }
-                setStatus({ message: `Đang nén tệp ${f + 1}/${processedFiles.length}: ${i}/${numPages} trang...`, type: 'loading' });
-              }
-              const pdfBytes = await pdfDoc.save();
-              zip.file(`${file.name.replace(/\.pdf$/i, '')}_compressed.pdf`, pdfBytes);
-            }
-            
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, 'compressed_pdfs.zip');
-          } else {
-            const file = processedFiles[0];
-            setStatus({ message: '🔄 Đang nén PDF (Rasterize Pro)...', type: 'loading' });
-            
+          const zip = new JSZip();
+          for (let f = 0; f < processedFiles.length; f++) {
+            const file = processedFiles[f];
             const arrayBuffer = await file.arrayBuffer();
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
-            const numPages = pdf.numPages;
             const pdfDoc = await PDFDocument.create();
-            
-            for (let i = 1; i <= numPages; i++) {
-              setStatus({ message: `Đang nén: ${i}/${numPages} trang...`, type: 'loading' });
+            for (let i = 1; i <= pdf.numPages; i++) {
               const page = await pdf.getPage(i);
-              const viewport = page.getViewport({ scale: dpi / 72 }); 
+              const viewport = page.getViewport({ scale: currentDpi / 72 }); 
               const canvas = document.createElement('canvas');
               const context = canvas.getContext('2d');
               if (!context) continue;
               canvas.height = viewport.height;
               canvas.width = viewport.width;
               await page.render({ canvasContext: context, viewport: viewport } as any).promise;
-              
-              const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality / 100));
+              const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', currentQuality / 100));
               if (blob) {
-                const imgBuffer = await blob.arrayBuffer();
+                const dpiBlob = await changeDpi(blob, currentDpi);
+                const imgBuffer = await dpiBlob.arrayBuffer();
                 const image = await pdfDoc.embedJpg(imgBuffer);
-                const scale = 72 / dpi;
+                const scale = 72 / currentDpi;
                 const width = image.width * scale;
                 const height = image.height * scale;
                 const newPage = pdfDoc.addPage([width, height]);
                 newPage.drawImage(image, { x: 0, y: 0, width, height });
               }
+              setStatus({ message: `Đang nén ${f + 1}: ${i}/${pdf.numPages} trang...`, type: 'loading' });
             }
             const pdfBytes = await pdfDoc.save();
-            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-            downloadBlob(blob, `${file.name.replace(/\.pdf$/i, '')}_compressed.pdf`);
+            zip.file(`${file.name.replace(/\.pdf$/i, '')}_compressed.pdf`, pdfBytes);
+          }
+          if (processedFiles.length > 1) {
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'compressed_pdfs.zip');
+          } else {
+            const key = Object.keys(zip.files)[0];
+            downloadBlob(await zip.file(key)!.async('blob'), key);
           }
           setStatus({ message: '✅ Đã nén PDF thành công!', type: 'success' });
           break;
         }
 
-        case 'CHANGE_DPI': {
-          if (!toolInput && !overrideValue) {
-            setToolInput({
-              action,
-              files: processedFiles,
-              value: '300',
-              type: 'select',
-              options: [
-                { label: '72 DPI (Mặc định web)', value: '72' },
-                { label: '96 DPI (Mặc định Windows)', value: '96' },
-                { label: '150 DPI (Trung bình)', value: '150' },
-                { label: '300 DPI (Chuẩn in ấn - Khuyên chọn)', value: '300' },
-                { label: '600 DPI (Sắc nét nhất)', value: '600' }
-              ]
-            });
-            setStatus(null);
-            return;
+        case 'CONVERT_IMAGE': {
+          const format = currentValue || 'jpg';
+          const targetFormat = format.toLowerCase() === 'jpg' ? 'jpeg' : 'png';
+          if (processedFiles.length > 1) {
+            const zip = new JSZip();
+            for (let i = 0; i < processedFiles.length; i++) {
+              const file = processedFiles[i];
+              try {
+                const convertedBlob = await compressImage(file, currentQuality, currentDpi, `image/${targetFormat}`);
+                zip.file(file.name.replace(/\.[^/.]+$/, "") + (format === 'jpg' ? '.jpg' : '.png'), await convertedBlob.arrayBuffer());
+              } catch (err) { zip.file(file.name, await file.arrayBuffer()); }
+            }
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'converted_images.zip');
+          } else {
+            const convertedBlob = await compressImage(processedFiles[0], currentQuality, currentDpi, `image/${targetFormat}`);
+            downloadBlob(convertedBlob, `converted.${format}`);
           }
-          
-          const targetDpi = parseInt(overrideValue || toolInput?.value || '300');
-          setStatus({ message: `🔄 Đang cập nhật DPI sang ${targetDpi}...`, type: 'loading' });
-          
-          const zip = new JSZip();
-          const useZip = processedFiles.length > 1;
+          setStatus({ message: '✅ Đã chuyển đổi ảnh thành công!', type: 'success' });
+          break;
+        }
 
+        case 'CHANGE_DPI': {
+          const targetDpi = parseInt(currentValue || '300');
+          const zip = new JSZip();
           for (let f = 0; f < processedFiles.length; f++) {
             const file = processedFiles[f];
-            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-            setStatus({ message: `Đang xử lý ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
-            
-            if (isPdf) {
-              const arrayBuffer = await file.arrayBuffer();
-              const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-              const pdf = await loadingTask.promise;
-              const numPages = pdf.numPages;
+            if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+              const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
               const pdfDoc = await PDFDocument.create();
-              
-              // Actual rendering at requested target DPI
-              const renderScale = targetDpi / 72; 
-              
-              for (let i = 1; i <= numPages; i++) {
+              for (let i = 1; i <= pdf.numPages; i++) {
                 const page = await pdf.getPage(i);
-                const viewport = page.getViewport({ scale: renderScale }); 
+                const viewport = page.getViewport({ scale: targetDpi / 72 }); 
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
                 if (!context) continue;
-                
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
                 await page.render({ canvasContext: context, viewport: viewport } as any).promise;
-                
-                // Adjust JPEG quality to manage file size increase from higher resolution
                 const quality = targetDpi >= 300 ? 0.76 : 0.86;
                 const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
-                
                 if (blob) {
-                  // Inject DPI metadata into the JPEG blob
-                  const dpiBlob = await changeDpi(blob, targetDpi);
-                  const imgBuffer = await dpiBlob.arrayBuffer();
-                  const image = await pdfDoc.embedJpg(imgBuffer);
-                  
-                  const originalViewport = page.getViewport({ scale: 1 });
-                  const originalWidth = originalViewport.width;
-                  const originalHeight = originalViewport.height;
-                  
-                  const newPage = pdfDoc.addPage([originalWidth, originalHeight]);
-                  newPage.drawImage(image, { 
-                    x: 0, 
-                    y: 0, 
-                    width: originalWidth, 
-                    height: originalHeight 
-                  });
-                }
-                if (numPages > 1) {
-                  setStatus({ message: `Đang xử lý PDF ${f + 1}: ${i}/${numPages} trang...`, type: 'loading' });
+                  const image = await pdfDoc.embedJpg(await (await changeDpi(blob, targetDpi)).arrayBuffer());
+                  const orig = page.getViewport({ scale: 1 });
+                  const newPage = pdfDoc.addPage([orig.width, orig.height]);
+                  newPage.drawImage(image, { x: 0, y: 0, width: orig.width, height: orig.height });
                 }
               }
-              const pdfBytes = await pdfDoc.save();
-              zip.file(`${file.name.replace(/\.pdf$/i, '')}_${targetDpi}dpi.pdf`, pdfBytes);
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_${targetDpi}dpi.pdf`, await pdfDoc.save());
             } else {
-              // Image handling: Focus on metadata injection to satisfy tools reading DPI fields
-              const bitmap = await createImageBitmap(file);
-              const canvas = document.createElement('canvas');
-              const ctx = canvas.getContext('2d');
-              if (!ctx) continue;
-
-              // Keep pixels same as user asked to "preserve file size" 
-              // We only update the logical resolution metadata
-              canvas.width = bitmap.width;
-              canvas.height = bitmap.height;
-              ctx.drawImage(bitmap, 0, 0);
-              
-              const format = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-              const imgBlob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, format, 0.94));
-              
-              if (imgBlob) {
-                // Update DPI metadata in the binary header
-                const dpiBlob = await changeDpi(imgBlob, targetDpi);
-                const ext = format === 'image/png' ? 'png' : 'jpg';
-                zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.${ext}`, dpiBlob);
-              }
+              // Direct image handling: Injection only, to preserve original quality/pixels
+              const dpiBlob = await changeDpi(file, targetDpi);
+              const ext = file.type === 'image/png' ? 'png' : 'jpg';
+              zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.${ext}`, await dpiBlob.arrayBuffer());
             }
           }
-
-          if (useZip) {
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, `dpi_${targetDpi}_tool.zip`);
+          if (processedFiles.length > 1) {
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), `dpi_${targetDpi}.zip`);
           } else {
-            const firstFileKey = Object.keys(zip.files)[0];
-            const fileData = await zip.file(firstFileKey)?.async('blob');
-            if (fileData) {
-              downloadBlob(fileData, firstFileKey);
+            const key = Object.keys(zip.files)[0];
+            downloadBlob(await zip.file(key)!.async('blob'), key);
+          }
+          setStatus({ message: `✅ Cập nhật DPI ${targetDpi} thành công!`, type: 'success' });
+          break;
+        }
+
+        case 'MERGE_PDF': {
+          const mergedPdf = await PDFDocument.create();
+          for (const file of Array.from(toolInput?.files || processedFiles) as File[]) {
+            const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+            const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+            copiedPages.forEach((page) => mergedPdf.addPage(page));
+          }
+          downloadBlob(new Blob([await mergedPdf.save()], { type: 'application/pdf' }), 'merged.pdf');
+          setStatus({ message: '✅ Đã gộp PDF thành công!', type: 'success' });
+          break;
+        }
+
+        case 'SPLIT_PDF': {
+          const zip = new JSZip();
+          for (const file of processedFiles) {
+            const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+            for (let i = 0; i < pdf.getPageCount(); i++) {
+              const newPdf = await PDFDocument.create();
+              const [page] = await newPdf.copyPages(pdf, [i]);
+              newPdf.addPage(page);
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_page_${i+1}.pdf`, await newPdf.save());
             }
           }
-          
-          setStatus({ message: `✅ Cập nhật DPI ${targetDpi} hoàn tất (Đã tối ưu dung lượng)!`, type: 'success' });
-          setToolInput(null);
+          downloadBlob(await zip.generateAsync({ type: 'blob' }), 'split.zip');
+          setStatus({ message: '✅ Đã tách PDF thành công!', type: 'success' });
+          break;
+        }
+
+        case 'DELETE_PAGES':
+        case 'EXTRACT_PAGES': {
+          const pagesInput = currentValue || toolInput?.value || '';
+          const pageIndices = parsePageInput(pagesInput);
+          const zip = new JSZip();
+          for (const file of Array.from(toolInput?.files || processedFiles) as File[]) {
+            const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+            const newPdf = await PDFDocument.create();
+            const indices = action === 'DELETE_PAGES' 
+              ? pdf.getPageIndices().filter(i => !pageIndices.includes(i))
+              : pageIndices.filter(i => i >= 0 && i < pdf.getPageCount());
+            if (indices.length > 0) {
+              const copiedPages = await newPdf.copyPages(pdf, indices);
+              copiedPages.forEach(p => newPdf.addPage(p));
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_modified.pdf`, await newPdf.save());
+            }
+          }
+          if (Object.keys(zip.files).length > 1) {
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'processed_pdfs.zip');
+          } else {
+            const key = Object.keys(zip.files)[0];
+            downloadBlob(await zip.file(key)!.async('blob'), key);
+          }
+          setStatus({ message: '✅ Đã xử lý thành công!', type: 'success' });
           break;
         }
 
         case 'PHOTO_EDITOR':
         case 'PHOTO_EDITOR_MOBILE': {
-          const file = processedFiles[0];
-          setPhotoEditorFile(file);
+          setPhotoEditorFile(processedFiles[0]);
           setIsMobileEditor(action === 'PHOTO_EDITOR_MOBILE');
-          setStatus(null);
           break;
         }
 
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
+      setToolInput(null);
     } catch (error: any) {
       console.error(error);
       setStatus({ message: `❌ ${error.message || 'Có lỗi xảy ra.'}`, type: 'error' });
@@ -901,66 +647,6 @@ export default function App() {
       {/* Menu Bar */}
       <div className="border-b border-slate-100 px-4 py-2 flex gap-6 text-sm text-slate-600 relative">
         <div 
-          className="cursor-pointer hover:text-blue-600 transition-colors relative"
-          onMouseEnter={() => setShowQualityMenu(true)}
-          onMouseLeave={() => setShowQualityMenu(false)}
-        >
-          Chất lượng nén
-          <AnimatePresence>
-            {showQualityMenu && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="absolute top-full left-0 mt-2 bg-white border border-slate-100 rounded-lg shadow-xl p-4 z-50 w-48"
-              >
-                <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">Chọn chất lượng</div>
-                <input 
-                  type="range" 
-                  min="10" 
-                  max="100" 
-                  value={quality} 
-                  onChange={(e) => setQuality(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-                <div className="text-center mt-2 font-bold text-blue-600">{quality}%</div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        <div 
-          className="cursor-pointer hover:text-blue-600 transition-colors relative"
-          onMouseEnter={() => setShowDpiMenu(true)}
-          onMouseLeave={() => setShowDpiMenu(false)}
-        >
-          Độ phân giải (DPI)
-          <AnimatePresence>
-            {showDpiMenu && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="absolute top-full left-0 mt-2 bg-white border border-slate-100 rounded-lg shadow-xl p-4 z-50 w-48"
-              >
-                <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">Chọn DPI</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {[72, 150, 300, 600].map(d => (
-                    <button
-                      key={d}
-                      onClick={() => setDpi(d)}
-                      className={`px-2 py-1 rounded text-xs font-bold transition-colors ${dpi === d ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-                    >
-                      {d} DPI
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        <div 
           className="cursor-pointer hover:text-blue-600 transition-colors"
           onClick={() => setShowSupport(true)}
         >
@@ -989,56 +675,6 @@ export default function App() {
           <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.2 • Pro Edition</p>
         </motion.div>
       </header>
-
-      {/* Controls */}
-      <div className="max-w-6xl mx-auto px-6 mb-8 flex flex-col items-center gap-6">
-        <div className="flex flex-col sm:flex-row items-center gap-8 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <div className="flex flex-col gap-2 w-48">
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Chất lượng nén: {quality}%</span>
-            </div>
-            <input 
-              type="range" 
-              min="10" 
-              max="100" 
-              value={quality} 
-              onChange={(e) => setQuality(parseInt(e.target.value))}
-              className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
-            />
-          </div>
-
-          <div className="h-8 w-px bg-slate-100 hidden sm:block" />
-
-          <div className="flex flex-col gap-2 w-48">
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">DPI: {dpi}</span>
-            </div>
-            <div className="flex gap-2">
-              {[72, 150, 300].map(d => (
-                <button
-                  key={d}
-                  onClick={() => setDpi(d)}
-                  className={`flex-1 py-1 rounded-md text-[10px] font-bold transition-all ${
-                    dpi === d 
-                      ? 'bg-blue-600 text-white shadow-md shadow-blue-200' 
-                      : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
-                  }`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <button 
-          onClick={resetSettings}
-          className="flex items-center gap-2 text-slate-400 hover:text-blue-600 transition-colors text-xs font-medium uppercase tracking-widest"
-        >
-          <RefreshCw className="w-3 h-3" />
-          Làm mới (Refresh)
-        </button>
-      </div>
 
       {/* Grid UI */}
       <main className="max-w-6xl mx-auto px-6 pb-24">
@@ -1130,7 +766,71 @@ export default function App() {
                 {TOOLS.find(t => t.id === toolInput.action)?.title}
               </h2>
               
-              <div className="space-y-4">
+              <div className="space-y-6">
+                {(toolInput.type === 'settings' || ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(toolInput.action)) && (
+                   <div className="space-y-6 bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                      {['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE'].includes(toolInput.action) && (
+                        <div className="space-y-3">
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex justify-between">
+                            Chất lượng nén: <span className="text-blue-600">{toolInput.quality}%</span>
+                          </label>
+                          <input 
+                            type="range" 
+                            min="10" 
+                            max="100" 
+                            value={toolInput.quality} 
+                            onChange={(e) => setToolInput({ ...toolInput, quality: parseInt(e.target.value) })}
+                            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                          />
+                        </div>
+                      )}
+
+                      {['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(toolInput.action) && (
+                        <div className="space-y-3">
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                            Độ phân giải (DPI)
+                          </label>
+                          <div className="grid grid-cols-5 gap-2">
+                            {[72, 96, 150, 300, 600].map(d => (
+                              <button
+                                key={d}
+                                onClick={() => setToolInput({ ...toolInput, dpi: d, value: toolInput.action === 'CHANGE_DPI' ? d.toString() : toolInput.value })}
+                                className={`py-2 rounded-lg text-[10px] font-bold transition-all border ${
+                                  toolInput.dpi === d 
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-md' 
+                                    : 'bg-white text-slate-600 border-slate-100 hover:border-blue-200'
+                                }`}
+                              >
+                                {d}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {toolInput.action === 'CONVERT_IMAGE' && toolInput.options && (
+                        <div className="space-y-3">
+                           <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Định dạng đầu ra</label>
+                           <div className="grid grid-cols-2 gap-2">
+                             {toolInput.options.map(opt => (
+                               <button
+                                 key={opt.value}
+                                 onClick={() => setToolInput({...toolInput, value: opt.value})}
+                                 className={`py-2 rounded-lg text-xs font-bold transition-all border ${
+                                   toolInput.value === opt.value
+                                     ? 'bg-blue-600 text-white border-blue-600'
+                                     : 'bg-white text-slate-600 border-slate-100'
+                                 }`}
+                               >
+                                 {opt.label}
+                               </button>
+                             ))}
+                           </div>
+                        </div>
+                      )}
+                   </div>
+                )}
+
                 {toolInput.type === 'text' ? (
                   <div>
                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">
