@@ -55,7 +55,8 @@ type ToolAction =
   | 'PHOTOPEA'
   | 'AUDIO_TO_TEXT'
   | 'CHANGE_DPI'
-  | 'PDF_TO_WORD';
+  | 'PDF_TO_WORD'
+  | 'SDVN_PHOTO_EDIT';
 
 interface Tool {
   id: ToolAction;
@@ -186,6 +187,14 @@ const TOOLS: Tool[] = [
     description: 'Sử dụng ứng dụng AI để chuyển đổi âm thanh thành văn bản',
     accept: 'audio/*',
     multiple: true
+  },
+  { 
+    id: 'SDVN_PHOTO_EDIT', 
+    title: 'Chỉnh sửa ảnh AI với SDVN', 
+    icon: <Sparkles className="w-10 h-10 text-violet-600" />, 
+    description: 'Sử dụng ứng dụng AI chuyên sâu chỉnh sửa ảnh thông minh của SDVN',
+    accept: 'image/*',
+    multiple: false
   }
 ];
 
@@ -875,7 +884,7 @@ export default function App() {
           className="cursor-pointer hover:text-blue-600 transition-colors"
           onClick={() => setShowSupport(true)}
         >
-          Hỗ trợ
+          Thông tin
         </div>
       </div>
 
@@ -897,7 +906,7 @@ export default function App() {
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Bộ công cụ thông minh cho văn phòng
           </p>
-          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.2 • Pro Edition</p>
+          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.3 • Pro Edition</p>
         </motion.div>
       </header>
 
@@ -920,6 +929,8 @@ export default function App() {
                   window.open('https://www.photopea.com/', '_blank');
                 } else if (tool.id === 'AUDIO_TO_TEXT') {
                   window.open('https://ai.studio/apps/d046bb29-3951-4c90-8ef4-df4d51fbb84f?fullscreenApplet=true', '_blank');
+                } else if (tool.id === 'SDVN_PHOTO_EDIT') {
+                  window.open('https://aistudio.google.com/app/apps/d798af97-ec18-4946-bce4-3b5b0e7d403e?showPreview=true&showAssistant=true&fullscreenApplet=true', '_blank');
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
@@ -1193,7 +1204,7 @@ export default function App() {
                   </div>
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Phiên bản</div>
-                    <div className="text-slate-700 font-bold">v2.0.2 - Pro Edition</div>
+                    <div className="text-slate-700 font-bold">v2.0.3 - Pro Edition</div>
                   </div>
                   <a 
                     href="https://fb.com/minhtri.pham.1997" 
