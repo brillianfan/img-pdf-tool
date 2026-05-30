@@ -54,7 +54,8 @@ type ToolAction =
   | 'EXTRACT_TEXT_AI'
   | 'PHOTOPEA'
   | 'AUDIO_TO_TEXT'
-  | 'CHANGE_DPI';
+  | 'CHANGE_DPI'
+  | 'PDF_TO_WORD';
 
 interface Tool {
   id: ToolAction;
@@ -119,6 +120,14 @@ const TOOLS: Tool[] = [
     title: 'Tách 1 PDF thành nhiều trang', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Chia nhỏ tệp PDF thành từng trang riêng lẻ',
+    accept: '.pdf',
+    multiple: true
+  },
+  { 
+    id: 'PDF_TO_WORD', 
+    title: 'Chuyển PDF sang Word', 
+    icon: <FileText className="w-10 h-10 text-blue-600" />, 
+    description: 'Chuyển đổi tệp PDF của bạn thành tài liệu Word (.doc) có thể chỉnh sửa',
     accept: '.pdf',
     multiple: true
   },
@@ -325,7 +334,7 @@ export default function App() {
     setToolInput(null);
 
     // Validate file types for PDF tools
-    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES'];
+    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES', 'PDF_TO_WORD'];
     if (pdfTools.includes(action)) {
       const nonPdfFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
       if (nonPdfFiles.length > 0) {
@@ -547,6 +556,112 @@ export default function App() {
           break;
         }
 
+        case 'PDF_TO_WORD': {
+          if (processedFiles.length > 1) {
+            const zip = new JSZip();
+            for (let f = 0; f < processedFiles.length; f++) {
+              const file = processedFiles[f];
+              setStatus({ message: `Đang chuyển đổi tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
+              
+              const arrayBuffer = await file.arrayBuffer();
+              const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+              const pdf = await loadingTask.promise;
+              let fileWordHtml = '<html><head><meta charset="utf-8"/><style>p { margin-bottom: 10px; font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; } .page-break { page-break-before: always; }</style></head><body>';
+              
+              for (let i = 1; i <= pdf.numPages; i++) {
+                setStatus({ message: `Đang trích xuất văn bản tệp ${f + 1}: Trang ${i}/${pdf.numPages}...`, type: 'loading' });
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const items = textContent.items as any[];
+                
+                const lines: { y: number; items: any[] }[] = [];
+                const threshold = 5;
+                
+                for (const item of items) {
+                  if (!item.str || item.str.trim() === '') continue;
+                  const x = item.transform[4];
+                  const y = item.transform[5];
+                  
+                  let line = lines.find(l => Math.abs(l.y - y) < threshold);
+                  if (!line) {
+                    line = { y, items: [] };
+                    lines.push(line);
+                  }
+                  line.items.push({ x, str: item.str });
+                }
+                
+                lines.sort((a, b) => b.y - a.y);
+                const pageLines = lines.map(line => {
+                  line.items.sort((a, b) => a.x - b.x);
+                  return line.items.map(it => it.str).join(' ');
+                });
+                
+                if (i > 1) {
+                  fileWordHtml += '<div class="page-break"></div>';
+                }
+                
+                fileWordHtml += pageLines.map(line => `<p>${escapeHtml(line)}</p>`).join('\n');
+              }
+              
+              fileWordHtml += '</body></html>';
+              const docBlob = new Blob([fileWordHtml], { type: 'application/msword;charset=utf-8' });
+              const docName = file.name.replace(/\.pdf$/i, '') + '.doc';
+              zip.file(docName, docBlob);
+            }
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'converted_word_files.zip');
+          } else {
+            const file = processedFiles[0];
+            setStatus({ message: `Đang chuyển đổi tệp: ${file.name}...`, type: 'loading' });
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            const pdf = await loadingTask.promise;
+            let fileWordHtml = '<html><head><meta charset="utf-8"/><style>p { margin-bottom: 10px; font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; } .page-break { page-break-before: always; }</style></head><body>';
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+              setStatus({ message: `Đang trích xuất văn bản: Trang ${i}/${pdf.numPages}...`, type: 'loading' });
+              const page = await pdf.getPage(i);
+              const textContent = await page.getTextContent();
+              const items = textContent.items as any[];
+              
+              const lines: { y: number; items: any[] }[] = [];
+              const threshold = 5;
+              
+              for (const item of items) {
+                if (!item.str || item.str.trim() === '') continue;
+                const x = item.transform[4];
+                const y = item.transform[5];
+                
+                let line = lines.find(l => Math.abs(l.y - y) < threshold);
+                if (!line) {
+                  line = { y, items: [] };
+                  lines.push(line);
+                }
+                line.items.push({ x, str: item.str });
+              }
+              
+              lines.sort((a, b) => b.y - a.y);
+              const pageLines = lines.map(line => {
+                line.items.sort((a, b) => a.x - b.x);
+                return line.items.map(it => it.str).join(' ');
+              });
+              
+              if (i > 1) {
+                fileWordHtml += '<div class="page-break"></div>';
+              }
+              
+              fileWordHtml += pageLines.map(line => `<p>${escapeHtml(line)}</p>`).join('\n');
+            }
+            
+            fileWordHtml += '</body></html>';
+            const docBlob = new Blob([fileWordHtml], { type: 'application/msword;charset=utf-8' });
+            const docName = file.name.replace(/\.pdf$/i, '') + '.doc';
+            downloadBlob(docBlob, docName);
+          }
+          setStatus({ message: '✅ Đã chuyển đổi PDF sang Word thành công!', type: 'success' });
+          break;
+        }
+
         case 'DELETE_PAGES':
         case 'EXTRACT_PAGES': {
           const pagesInput = currentValue || '';
@@ -614,6 +729,15 @@ export default function App() {
       }
     }
     return [...new Set(pages)].sort((a, b) => a - b);
+  };
+
+  const escapeHtml = (text: string) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   };
 
   const downloadBlob = (blob: Blob, filename: string) => {
