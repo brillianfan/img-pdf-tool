@@ -189,6 +189,172 @@ const TOOLS: Tool[] = [
   }
 ];
 
+const escapeHtml = (text: string) => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+};
+
+const mapFontFamily = (rawFont: string, fontName: string): string => {
+  const combined = (rawFont + ' ' + fontName).toLowerCase();
+  if (combined.includes('times') || combined.includes('serif')) {
+    return 'Times New Roman';
+  }
+  if (combined.includes('courier') || combined.includes('mono')) {
+    return 'Courier New';
+  }
+  if (combined.includes('calibri')) {
+    return 'Calibri';
+  }
+  if (combined.includes('georgia')) {
+    return 'Georgia';
+  }
+  if (combined.includes('garamond')) {
+    return 'Garamond';
+  }
+  if (combined.includes('verdana')) {
+    return 'Verdana';
+  }
+  if (combined.includes('arial') || combined.includes('helvetica') || combined.includes('sans')) {
+    return 'Arial';
+  }
+  return 'Calibri';
+};
+
+const generateWordHtmlFromPdf = async (
+  pdf: any,
+  onPageProgress: (pageIndex: number, totalPages: number) => void
+): Promise<string> => {
+  let widthCm = 21.0;
+  let heightCm = 29.7;
+  try {
+    const firstPage = await pdf.getPage(1);
+    const viewport = firstPage.getViewport({ scale: 1 });
+    widthCm = (viewport.width / 72) * 2.54;
+    heightCm = (viewport.height / 72) * 2.54;
+  } catch (e) {
+    console.error('Failed to parse viewport dimensions', e);
+  }
+
+  let html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">`;
+  html += `<head><meta charset="utf-8"/>`;
+  html += `<!--[if gte mso 9]>`;
+  html += `<xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml>`;
+  html += `<![endif]-->`;
+  html += `<style>`;
+  html += `@page WordSection1 { size: ${widthCm.toFixed(2)}cm ${heightCm.toFixed(2)}cm; margin: 2.0cm 2.0cm 2.0cm 2.0cm; }`;
+  html += `div.WordSection1 { page: WordSection1; }`;
+  html += `body { font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; }`;
+  html += `p { margin: 0; padding: 0; line-height: normal; }`;
+  html += `.page-break { page-break-before: always; mso-break-type: section-break; }`;
+  html += `</style></head><body>`;
+  html += `<div class="WordSection1">`;
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    onPageProgress(i, pdf.numPages);
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    const items = (textContent.items as any[]).filter(it => it.str !== undefined);
+
+    if (items.length === 0) {
+      if (i > 1) {
+        html += `<div class="page-break"></div>`;
+      }
+      continue;
+    }
+
+    const lines: { y: number; items: any[] }[] = [];
+    const threshold = 5;
+
+    for (const item of items) {
+      const str = item.str;
+      const x = item.transform[4];
+      const y = item.transform[5];
+      const height = Math.abs(item.transform[3]);
+
+      let line = lines.find(l => Math.abs(l.y - y) < Math.max(threshold, height * 0.4));
+      if (!line) {
+        line = { y, items: [] };
+        lines.push(line);
+      }
+      line.items.push({ x, str, height, fontName: item.fontName, width: item.width });
+    }
+
+    lines.sort((a, b) => b.y - a.y);
+    const pageMinX = Math.min(...items.map(it => it.transform[4]));
+
+    if (i > 1) {
+      html += `<div class="page-break"></div>`;
+    }
+
+    for (let j = 0; j < lines.length; j++) {
+      const line = lines[j];
+      line.items.sort((a, b) => a.x - b.x);
+
+      let marginBottom = 6;
+      if (j < lines.length - 1) {
+        const verticalDistance = line.y - lines[j+1].y;
+        const lineMaxHeight = Math.max(...line.items.map(it => it.height), 1);
+        if (verticalDistance > 1.2 * lineMaxHeight) {
+          marginBottom = Math.min(120, verticalDistance - (1.1 * lineMaxHeight));
+        } else {
+          marginBottom = 0;
+        }
+      }
+
+      const firstItem = line.items[0];
+      const indentPt = Math.max(0, firstItem.x - pageMinX);
+      const pStyle = `margin: 0; margin-left: ${indentPt.toFixed(1)}pt; margin-bottom: ${marginBottom.toFixed(1)}pt; line-height: normal; text-align: left;`;
+
+      html += `<p style="${pStyle}">`;
+
+      let lastRightX = 0;
+      for (let idx = 0; idx < line.items.length; idx++) {
+        const it = line.items[idx];
+        const styleParts: string[] = [];
+
+        const fontObj = textContent.styles[it.fontName];
+        const rawFamily = fontObj ? fontObj.fontFamily : 'Calibri';
+        const fontFamily = mapFontFamily(rawFamily, it.fontName);
+        styleParts.push(`font-family: '${fontFamily}'`);
+        styleParts.push(`font-size: ${it.height.toFixed(1)}pt`);
+
+        const combinedFont = (rawFamily + ' ' + it.fontName).toLowerCase();
+        if (combinedFont.includes('bold') || combinedFont.includes('bd') || combinedFont.includes('black') || combinedFont.includes('heavy') || combinedFont.includes('semibold')) {
+          styleParts.push('font-weight: bold');
+        }
+        if (combinedFont.includes('italic') || combinedFont.includes('oblique') || combinedFont.includes('it')) {
+          styleParts.push('font-style: italic');
+        }
+
+        let marginStyle = '';
+        if (idx > 0) {
+          const gap = it.x - lastRightX;
+          if (gap > 2) {
+            marginStyle = `margin-left: ${gap.toFixed(1)}pt`;
+            if (gap > 3 && !it.str.startsWith(' ')) {
+              html += ' ';
+            }
+          }
+        }
+
+        const spanStyle = styleParts.join('; ') + (marginStyle ? `; ${marginStyle}` : '');
+        html += `<span style="${spanStyle}">${escapeHtml(it.str)}</span>`;
+        const widthVal = it.width || (it.str.length * it.height * 0.5);
+        lastRightX = it.x + widthVal;
+      }
+
+      html += `</p>\n`;
+    }
+  }
+
+  html += `</div></body></html>`;
+  return html;
+};
+
 export default function App() {
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'loading' } | null>(null);
   const [isDragging, setIsDragging] = useState<ToolAction | null>(null);
@@ -562,48 +728,14 @@ export default function App() {
             for (let f = 0; f < processedFiles.length; f++) {
               const file = processedFiles[f];
               setStatus({ message: `Đang chuyển đổi tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
-              
               const arrayBuffer = await file.arrayBuffer();
               const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
               const pdf = await loadingTask.promise;
-              let fileWordHtml = '<html><head><meta charset="utf-8"/><style>p { margin-bottom: 10px; font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; } .page-break { page-break-before: always; }</style></head><body>';
               
-              for (let i = 1; i <= pdf.numPages; i++) {
-                setStatus({ message: `Đang trích xuất văn bản tệp ${f + 1}: Trang ${i}/${pdf.numPages}...`, type: 'loading' });
-                const page = await pdf.getPage(i);
-                const textContent = await page.getTextContent();
-                const items = textContent.items as any[];
-                
-                const lines: { y: number; items: any[] }[] = [];
-                const threshold = 5;
-                
-                for (const item of items) {
-                  if (!item.str || item.str.trim() === '') continue;
-                  const x = item.transform[4];
-                  const y = item.transform[5];
-                  
-                  let line = lines.find(l => Math.abs(l.y - y) < threshold);
-                  if (!line) {
-                    line = { y, items: [] };
-                    lines.push(line);
-                  }
-                  line.items.push({ x, str: item.str });
-                }
-                
-                lines.sort((a, b) => b.y - a.y);
-                const pageLines = lines.map(line => {
-                  line.items.sort((a, b) => a.x - b.x);
-                  return line.items.map(it => it.str).join(' ');
-                });
-                
-                if (i > 1) {
-                  fileWordHtml += '<div class="page-break"></div>';
-                }
-                
-                fileWordHtml += pageLines.map(line => `<p>${escapeHtml(line)}</p>`).join('\n');
-              }
+              const fileWordHtml = await generateWordHtmlFromPdf(pdf, (pageIdx, totalPages) => {
+                setStatus({ message: `Đang trích xuất văn bản tệp ${f + 1}: Trang ${pageIdx}/${totalPages}...`, type: 'loading' });
+              });
               
-              fileWordHtml += '</body></html>';
               const docBlob = new Blob([fileWordHtml], { type: 'application/msword;charset=utf-8' });
               const docName = file.name.replace(/\.pdf$/i, '') + '.doc';
               zip.file(docName, docBlob);
@@ -612,48 +744,14 @@ export default function App() {
           } else {
             const file = processedFiles[0];
             setStatus({ message: `Đang chuyển đổi tệp: ${file.name}...`, type: 'loading' });
-            
             const arrayBuffer = await file.arrayBuffer();
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
-            let fileWordHtml = '<html><head><meta charset="utf-8"/><style>p { margin-bottom: 10px; font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; } .page-break { page-break-before: always; }</style></head><body>';
             
-            for (let i = 1; i <= pdf.numPages; i++) {
-              setStatus({ message: `Đang trích xuất văn bản: Trang ${i}/${pdf.numPages}...`, type: 'loading' });
-              const page = await pdf.getPage(i);
-              const textContent = await page.getTextContent();
-              const items = textContent.items as any[];
-              
-              const lines: { y: number; items: any[] }[] = [];
-              const threshold = 5;
-              
-              for (const item of items) {
-                if (!item.str || item.str.trim() === '') continue;
-                const x = item.transform[4];
-                const y = item.transform[5];
-                
-                let line = lines.find(l => Math.abs(l.y - y) < threshold);
-                if (!line) {
-                  line = { y, items: [] };
-                  lines.push(line);
-                }
-                line.items.push({ x, str: item.str });
-              }
-              
-              lines.sort((a, b) => b.y - a.y);
-              const pageLines = lines.map(line => {
-                line.items.sort((a, b) => a.x - b.x);
-                return line.items.map(it => it.str).join(' ');
-              });
-              
-              if (i > 1) {
-                fileWordHtml += '<div class="page-break"></div>';
-              }
-              
-              fileWordHtml += pageLines.map(line => `<p>${escapeHtml(line)}</p>`).join('\n');
-            }
+            const fileWordHtml = await generateWordHtmlFromPdf(pdf, (pageIdx, totalPages) => {
+              setStatus({ message: `Đang trích xuất văn bản: Trang ${pageIdx}/${totalPages}...`, type: 'loading' });
+            });
             
-            fileWordHtml += '</body></html>';
             const docBlob = new Blob([fileWordHtml], { type: 'application/msword;charset=utf-8' });
             const docName = file.name.replace(/\.pdf$/i, '') + '.doc';
             downloadBlob(docBlob, docName);
@@ -729,15 +827,6 @@ export default function App() {
       }
     }
     return [...new Set(pages)].sort((a, b) => a - b);
-  };
-
-  const escapeHtml = (text: string) => {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
   };
 
   const downloadBlob = (blob: Blob, filename: string) => {
