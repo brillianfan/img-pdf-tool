@@ -686,7 +686,8 @@ export default function App() {
             } else {
               // Direct image handling: Injection only, to preserve original quality/pixels
               const dpiBlob = await changeDpi(file, targetDpi);
-              const ext = file.type === 'image/png' ? 'png' : 'jpg';
+              const isPngFile = file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
+              const ext = isPngFile ? 'png' : 'jpg';
               zip.file(`${file.name.replace(/\.[^/.]+$/, "")}_${targetDpi}dpi.${ext}`, await dpiBlob.arrayBuffer());
             }
           }

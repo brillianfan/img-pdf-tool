@@ -14,8 +14,8 @@ export async function changeDpiInPng(blob: Blob, dpi: number): Promise<Blob> {
   view.setUint32(0, 9); // Length: 9 bytes
   view.setUint8(4, 0x70); // p
   view.setUint8(5, 0x48); // H
-  view.setUint8(6, 0x79); // y
-  view.setUint8(7, 0x53); // S
+  view.setUint8(6, 0x59); // Y
+  view.setUint8(7, 0x73); // s
   view.setUint32(8, pixelsPerMeter); // X
   view.setUint32(12, pixelsPerMeter); // Y
   view.setUint8(16, 1); // Unit: meter
@@ -44,13 +44,21 @@ export async function changeDpiInPng(blob: Blob, dpi: number): Promise<Blob> {
   const ihdrLen = (uint8[8] << 24) | (uint8[9] << 16) | (uint8[10] << 8) | uint8[11];
   insertPos = 8 + 4 + 4 + ihdrLen + 4; // Signature + Len + Type + Data + CRC
 
-  // Check if pHYs already exists and remove it
+  // Find if pHYs already exists by walking chunks instead of blind substring search
   let existingPhys = -1;
-  for (let i = 8; i < uint8.length - 8; i++) {
-    if (uint8[i] === 0x70 && uint8[i+1] === 0x48 && uint8[i+2] === 0x79 && uint8[i+3] === 0x53) {
-      existingPhys = i - 4;
+  let pos = 8; // skip signature
+  while (pos <= uint8.length - 12) {
+    const chunkLen = ((uint8[pos] << 24) | (uint8[pos+1] << 16) | (uint8[pos+2] << 8) | uint8[pos+3]) >>> 0;
+    if (pos + 8 + chunkLen + 4 > uint8.length) {
       break;
     }
+    const chunkType = String.fromCharCode(uint8[pos+4], uint8[pos+5], uint8[pos+6], uint8[pos+7]);
+    if (chunkType === 'pHYs' || chunkType === 'pHys' || chunkType === 'pHyS') {
+      existingPhys = pos;
+      break;
+    }
+    pos += 12 + chunkLen;
+    if (chunkType === 'IEND') break;
   }
 
   if (existingPhys !== -1) {
@@ -150,11 +158,31 @@ export async function changeDpiInJpeg(blob: Blob, dpi: number): Promise<Blob> {
 }
 
 export async function changeDpi(blob: Blob, dpi: number): Promise<Blob> {
-  if (blob.type === 'image/jpeg' || blob.type === 'image/jpg') {
+  const name = (blob as any).name || '';
+  const type = blob.type || '';
+  const isPng = type === 'image/png' || name.toLowerCase().endsWith('.png');
+  const isJpeg = type === 'image/jpeg' || type === 'image/jpg' || name.toLowerCase().endsWith('.jpg') || name.toLowerCase().endsWith('.jpeg');
+  
+  if (isJpeg) {
     return changeDpiInJpeg(blob, dpi);
   }
-  if (blob.type === 'image/png') {
+  if (isPng) {
     return changeDpiInPng(blob, dpi);
+  }
+
+  // Fallback: search magic signature bytes in slice
+  try {
+    const slice = blob.slice(0, 8);
+    const buf = await slice.arrayBuffer();
+    const arr = new Uint8Array(buf);
+    if (arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47) {
+      return changeDpiInPng(blob, dpi);
+    }
+    if (arr[0] === 0xFF && arr[1] === 0xD8) {
+      return changeDpiInJpeg(blob, dpi);
+    }
+  } catch (e) {
+    console.error("Signature check failed", e);
   }
   return blob;
 }
