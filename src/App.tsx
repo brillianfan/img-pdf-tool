@@ -35,6 +35,7 @@ import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { PhotoEditor } from './components/PhotoEditor';
 import { changeDpi } from './lib/dpiUtils';
+import { convertDocxToPdf } from './lib/docxToPdf';
 // Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
@@ -56,6 +57,7 @@ type ToolAction =
   | 'AUDIO_TO_TEXT'
   | 'CHANGE_DPI'
   | 'PDF_TO_WORD'
+  | 'WORD_TO_PDF'
   | 'SDVN_PHOTO_EDIT';
 
 interface Tool {
@@ -133,6 +135,14 @@ const TOOLS: Tool[] = [
     multiple: true
   },
   { 
+    id: 'WORD_TO_PDF', 
+    title: 'Chuyển Word sang PDF', 
+    icon: <FileText className="w-10 h-10 text-emerald-600" />, 
+    description: 'Chuyển đổi tài liệu Word (.docx) của bạn thành tệp PDF',
+    accept: '.docx',
+    multiple: true
+  },
+  { 
     id: 'DELETE_PAGES', 
     title: 'Xóa trang PDF', 
     icon: <Trash2 className="w-10 h-10 text-slate-700" />, 
@@ -148,14 +158,7 @@ const TOOLS: Tool[] = [
     accept: 'image/*,.heic,.heif,.jfif,.pdf',
     multiple: true
   },
-  { 
-    id: 'PHOTO_EDITOR_MOBILE', 
-    title: 'Chỉnh sửa ảnh mobile', 
-    icon: <Scissors className="w-10 h-10 text-slate-700" />, 
-    description: 'Phiên bản tối ưu cho điện thoại',
-    accept: 'image/*,.heic,.heif,.jfif,.pdf',
-    multiple: true
-  },
+
   { 
     id: 'EXTRACT_TEXT_AI', 
     title: 'Trích xuất văn bản AI (OCR)', 
@@ -518,6 +521,14 @@ export default function App() {
       }
     }
 
+    if (action === 'WORD_TO_PDF') {
+      const nonDocxFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.docx'));
+      if (nonDocxFiles.length > 0) {
+        setStatus({ message: `❌ Vui lòng chỉ chọn tệp Word (.docx) cho chức năng này.`, type: 'error' });
+        return;
+      }
+    }
+
     setStatus({ message: 'Đang chuẩn bị...', type: 'loading' });
 
     try {
@@ -767,6 +778,32 @@ export default function App() {
             downloadBlob(docBlob, docName);
           }
           setStatus({ message: '✅ Đã chuyển đổi PDF sang Word thành công!', type: 'success' });
+          break;
+        }
+
+        case 'WORD_TO_PDF': {
+          if (processedFiles.length > 1) {
+            const zip = new JSZip();
+            for (let f = 0; f < processedFiles.length; f++) {
+              const file = processedFiles[f];
+              setStatus({ message: `Đang chuyển đổi tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
+              const pdfBlob = await convertDocxToPdf(file, (msg) => {
+                setStatus({ message: `Tệp ${f + 1}: ${msg}`, type: 'loading' });
+              });
+              const pdfName = file.name.replace(/\.docx$/i, '') + '.pdf';
+              zip.file(pdfName, pdfBlob);
+            }
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'converted_pdf_files.zip');
+          } else {
+            const file = processedFiles[0];
+            setStatus({ message: `Đang chuyển đổi tệp: ${file.name}...`, type: 'loading' });
+            const pdfBlob = await convertDocxToPdf(file, (msg) => {
+              setStatus({ message: msg, type: 'loading' });
+            });
+            const pdfName = file.name.replace(/\.docx$/i, '') + '.pdf';
+            downloadBlob(pdfBlob, pdfName);
+          }
+          setStatus({ message: '✅ Đã chuyển đổi Word sang PDF thành công!', type: 'success' });
           break;
         }
 
