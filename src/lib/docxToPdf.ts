@@ -28,17 +28,81 @@ async function fetchFontSafe(url: string, fallbackUrl: string): Promise<ArrayBuf
   }
 }
 
+// Helper to check if an element is a deleted track change, comment, or hidden element
+function isIgnoredElement(element: HTMLElement): boolean {
+  try {
+    const style = window.getComputedStyle(element);
+    
+    // Check basic display and visibility
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return true;
+    }
+    
+    // Check opacity (if 0, it's hidden)
+    if (style.opacity === '0') {
+      return true;
+    }
+    
+    // Check color (transparent text is usually helper text or hidden tags)
+    const color = style.color;
+    if (color === 'transparent' || color === 'rgba(0, 0, 0, 0)') {
+      return true;
+    }
+
+    // Traverse ancestors to check for deleted text or annotations/comments
+    let curr: HTMLElement | null = element;
+    while (curr) {
+      const tagName = curr.tagName.toLowerCase();
+      if (tagName === 'del') return true;
+      
+      if (curr.classList) {
+        for (const cls of Array.from(curr.classList)) {
+          const lowerCls = cls.toLowerCase();
+          if (
+            lowerCls.includes('delete') || 
+            lowerCls.includes('deleted') || 
+            lowerCls.includes('comment') || 
+            lowerCls.includes('annotation') || 
+            lowerCls.includes('track-change')
+          ) {
+            return true;
+          }
+        }
+      }
+      
+      const currStyle = window.getComputedStyle(curr);
+      if (
+        currStyle.textDecorationLine?.includes('line-through') || 
+        currStyle.textDecoration?.includes('line-through')
+      ) {
+        return true;
+      }
+      
+      curr = curr.parentElement;
+    }
+  } catch (e) {
+    // Ignore style exceptions
+  }
+  return false;
+}
+
 // Recursively traverse DOM to find valid, non-empty, visible text nodes
 function getTextNodes(node: Node): Node[] {
   const textNodes: Node[] = [];
   if (node.nodeType === Node.TEXT_NODE) {
     if (node.textContent && node.textContent.trim().length > 0) {
-      textNodes.push(node);
+      const parent = node.parentNode as HTMLElement;
+      if (parent && parent.nodeType === Node.ELEMENT_NODE) {
+        if (!isIgnoredElement(parent)) {
+          textNodes.push(node);
+        }
+      } else {
+        textNodes.push(node);
+      }
     }
   } else if (node.nodeType === Node.ELEMENT_NODE) {
     const element = node as HTMLElement;
-    const style = window.getComputedStyle(element);
-    if (style.display !== 'none' && style.visibility !== 'hidden') {
+    if (!isIgnoredElement(element)) {
       for (let i = 0; i < node.childNodes.length; i++) {
         textNodes.push(...getTextNodes(node.childNodes[i]));
       }
@@ -88,12 +152,16 @@ export async function convertDocxToPdf(blob: Blob, onProgress?: (msg: string) =>
   if (onProgress) onProgress("Đang phân tích cấu trúc tệp Word...");
 
   // Create off-screen rendering container with precise standard Letter/A4 CSS width
+  // Set opacity: 0.01 and pointer-events: none while keeping it on screen (left: 0) to force 
+  // the browser layout engine to render word wraps, font metrics, and page layouts perfectly.
   const tempDiv = document.createElement('div');
   tempDiv.style.position = 'fixed';
-  tempDiv.style.left = '-10000px';
+  tempDiv.style.left = '0';
   tempDiv.style.top = '0';
   tempDiv.style.width = '816px'; 
   tempDiv.style.background = 'white';
+  tempDiv.style.opacity = '0.01';
+  tempDiv.style.pointerEvents = 'none';
   tempDiv.style.zIndex = '-9999';
   document.body.appendChild(tempDiv);
 
@@ -135,7 +203,7 @@ export async function convertDocxToPdf(blob: Blob, onProgress?: (msg: string) =>
     });
 
     // Wait a brief layout cycle to let heights, margins, and column layouts settle fully
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     if (onProgress) onProgress("Đang tải các phông chữ tiếng Việt chuẩn vector...");
 
@@ -411,4 +479,82 @@ export async function convertDocxToPdf(blob: Blob, onProgress?: (msg: string) =>
       document.body.removeChild(tempDiv);
     }
   }
+}
+
+export async function convertDocToPdf(file: File, onProgress?: (msg: string) => void): Promise<Blob> {
+  if (onProgress) onProgress("Đang tải tệp .doc lên máy chủ để trích xuất nội dung...");
+  
+  const formData = new FormData();
+  formData.append("file", file);
+  
+  const response = await fetch("/api/convert-doc", {
+    method: "POST",
+    body: formData
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Lỗi từ máy chủ (${response.status})`);
+  }
+  
+  const data = await response.json();
+  const htmlString = data.html;
+  
+  if (onProgress) onProgress("Đang tái tạo định dạng văn bản thông minh...");
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.left = '0';
+      iframe.style.top = '0';
+      iframe.style.width = '816px'; 
+      iframe.style.height = '1154px'; 
+      iframe.style.opacity = '0.01';
+      iframe.style.pointerEvents = 'none';
+      iframe.style.zIndex = '-9999';
+      document.body.appendChild(iframe);
+      
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc) {
+        reject(new Error("Không thể khởi tạo trình xử lý văn bản"));
+        return;
+      }
+      
+      doc.open();
+      doc.write(htmlString);
+      doc.close();
+      
+      // Let layout and fonts settle inside iframe
+      setTimeout(async () => {
+        try {
+          const opt = {
+            margin: [15, 15, 15, 15], 
+            filename: file.name.replace(/\.doc$/i, '') + '.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, logging: false },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+          };
+          
+          const html2pdfLib = (window as any).html2pdf || (await import('html2pdf.js')).default;
+          
+          if (onProgress) onProgress("Đang kết xuất tệp PDF vector sắc nét...");
+          
+          html2pdfLib().from(doc.body).set(opt).toPdf().get('pdf').then((pdfObj: any) => {
+            const pdfBlob = pdfObj.output('blob');
+            document.body.removeChild(iframe);
+            resolve(pdfBlob);
+          }).catch((err: any) => {
+            document.body.removeChild(iframe);
+            reject(err);
+          });
+        } catch (e) {
+          document.body.removeChild(iframe);
+          reject(e);
+        }
+      }, 500);
+    } catch (error) {
+      reject(error);
+    }
+  });
 }

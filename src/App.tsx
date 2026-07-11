@@ -33,9 +33,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
-import { PhotoEditor } from './components/PhotoEditor';
 import { changeDpi } from './lib/dpiUtils';
-import { convertDocxToPdf } from './lib/docxToPdf';
+import { convertDocxToPdf, convertDocToPdf } from './lib/docxToPdf';
 // Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
@@ -50,8 +49,6 @@ type ToolAction =
   | 'MERGE_PDF' 
   | 'SPLIT_PDF' 
   | 'DELETE_PAGES'
-  | 'PHOTO_EDITOR'
-  | 'PHOTO_EDITOR_MOBILE'
   | 'EXTRACT_TEXT_AI'
   | 'PHOTOPEA'
   | 'AUDIO_TO_TEXT'
@@ -138,8 +135,8 @@ const TOOLS: Tool[] = [
     id: 'WORD_TO_PDF', 
     title: 'Chuyển Word sang PDF', 
     icon: <FileText className="w-10 h-10 text-emerald-600" />, 
-    description: 'Chuyển đổi tài liệu Word (.docx) của bạn thành tệp PDF',
-    accept: '.docx',
+    description: 'Chuyển đổi tài liệu Word (.docx, .doc) của bạn thành tệp PDF',
+    accept: '.docx,.doc',
     multiple: true
   },
   { 
@@ -150,15 +147,6 @@ const TOOLS: Tool[] = [
     accept: '.pdf',
     multiple: true
   },
-  { 
-    id: 'PHOTO_EDITOR', 
-    title: 'Chỉnh sửa ảnh (Photoshop)', 
-    icon: <Scissors className="w-10 h-10 text-slate-700" />, 
-    description: 'Cắt, vẽ, thêm chữ, bộ lọc và AI cho ảnh',
-    accept: 'image/*,.heic,.heif,.jfif,.pdf',
-    multiple: true
-  },
-
   { 
     id: 'EXTRACT_TEXT_AI', 
     title: 'Trích xuất văn bản AI (OCR)', 
@@ -373,8 +361,6 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [showSupport, setShowSupport] = useState(false);
-  const [photoEditorFile, setPhotoEditorFile] = useState<File | null>(null);
-  const [isMobileEditor, setIsMobileEditor] = useState(false);
   const [toolInput, setToolInput] = useState<{
     action: ToolAction;
     files: FileList | File[];
@@ -522,9 +508,12 @@ export default function App() {
     }
 
     if (action === 'WORD_TO_PDF') {
-      const nonDocxFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.docx'));
-      if (nonDocxFiles.length > 0) {
-        setStatus({ message: `❌ Vui lòng chỉ chọn tệp Word (.docx) cho chức năng này.`, type: 'error' });
+      const nonWordFiles = filesArray.filter(f => {
+        const ext = f.name.toLowerCase();
+        return !ext.endsWith('.docx') && !ext.endsWith('.doc');
+      });
+      if (nonWordFiles.length > 0) {
+        setStatus({ message: `❌ Vui lòng chỉ chọn tệp Word (.docx, .doc) cho chức năng này.`, type: 'error' });
         return;
       }
     }
@@ -787,20 +776,34 @@ export default function App() {
             for (let f = 0; f < processedFiles.length; f++) {
               const file = processedFiles[f];
               setStatus({ message: `Đang chuyển đổi tệp ${f + 1}/${processedFiles.length}: ${file.name}...`, type: 'loading' });
-              const pdfBlob = await convertDocxToPdf(file, (msg) => {
-                setStatus({ message: `Tệp ${f + 1}: ${msg}`, type: 'loading' });
-              });
-              const pdfName = file.name.replace(/\.docx$/i, '') + '.pdf';
+              
+              const isDoc = file.name.toLowerCase().endsWith('.doc');
+              const pdfBlob = isDoc 
+                ? await convertDocToPdf(file, (msg) => {
+                    setStatus({ message: `Tệp ${f + 1}: ${msg}`, type: 'loading' });
+                  })
+                : await convertDocxToPdf(file, (msg) => {
+                    setStatus({ message: `Tệp ${f + 1}: ${msg}`, type: 'loading' });
+                  });
+
+              const pdfName = file.name.replace(/\.docx$/i, '').replace(/\.doc$/i, '') + '.pdf';
               zip.file(pdfName, pdfBlob);
             }
             downloadBlob(await zip.generateAsync({ type: 'blob' }), 'converted_pdf_files.zip');
           } else {
             const file = processedFiles[0];
             setStatus({ message: `Đang chuyển đổi tệp: ${file.name}...`, type: 'loading' });
-            const pdfBlob = await convertDocxToPdf(file, (msg) => {
-              setStatus({ message: msg, type: 'loading' });
-            });
-            const pdfName = file.name.replace(/\.docx$/i, '') + '.pdf';
+            
+            const isDoc = file.name.toLowerCase().endsWith('.doc');
+            const pdfBlob = isDoc
+              ? await convertDocToPdf(file, (msg) => {
+                  setStatus({ message: msg, type: 'loading' });
+                })
+              : await convertDocxToPdf(file, (msg) => {
+                  setStatus({ message: msg, type: 'loading' });
+                });
+
+            const pdfName = file.name.replace(/\.docx$/i, '').replace(/\.doc$/i, '') + '.pdf';
             downloadBlob(pdfBlob, pdfName);
           }
           setStatus({ message: '✅ Đã chuyển đổi Word sang PDF thành công!', type: 'success' });
@@ -835,13 +838,6 @@ export default function App() {
             throw new Error('Không có trang nào được chọn hoặc kết quả trống.');
           }
           setStatus({ message: '✅ Đã xử lý thành công!', type: 'success' });
-          break;
-        }
-
-        case 'PHOTO_EDITOR':
-        case 'PHOTO_EDITOR_MOBILE': {
-          setPhotoEditorFile(processedFiles[0]);
-          setIsMobileEditor(action === 'PHOTO_EDITOR_MOBILE');
           break;
         }
 
@@ -1281,22 +1277,6 @@ export default function App() {
         accept={activeTool ? TOOLS.find(t => t.id === activeTool)?.accept : '*'}
         onChange={onFileSelect}
       />
-
-      {photoEditorFile && (
-        <PhotoEditor 
-          file={photoEditorFile} 
-          isMobile={isMobileEditor}
-          onClose={() => {
-            setPhotoEditorFile(null);
-            setIsMobileEditor(false);
-          }}
-          onSave={(blob) => {
-            downloadBlob(blob, 'edited-image.png');
-            setPhotoEditorFile(null);
-            setIsMobileEditor(false);
-          }}
-        />
-      )}
     </div>
   );
 }
