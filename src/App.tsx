@@ -20,6 +20,8 @@ import {
   Pencil,
   Mic,
   RefreshCw,
+  RotateCw,
+  RotateCcw,
   Image as ImageIcon,
   X,
   Info,
@@ -30,7 +32,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { changeDpi } from './lib/dpiUtils';
@@ -48,6 +50,7 @@ type ToolAction =
   | 'CONVERT_IMAGE' 
   | 'MERGE_PDF' 
   | 'SPLIT_PDF' 
+  | 'ROTATE_PDF'
   | 'DELETE_PAGES'
   | 'EXTRACT_TEXT_AI'
   | 'PHOTOPEA'
@@ -120,6 +123,14 @@ const TOOLS: Tool[] = [
     title: 'Tách 1 PDF thành nhiều trang', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
     description: 'Chia nhỏ tệp PDF thành từng trang riêng lẻ',
+    accept: '.pdf',
+    multiple: true
+  },
+  { 
+    id: 'ROTATE_PDF', 
+    title: 'Xoay trang PDF', 
+    icon: <RotateCw className="w-10 h-10 text-slate-700" />, 
+    description: 'Xoay các trang PDF theo góc 90°, 180°, 270°',
     accept: '.pdf',
     multiple: true
   },
@@ -365,9 +376,12 @@ export default function App() {
     action: ToolAction;
     files: FileList | File[];
     value?: string;
+    rotateAngle?: number;
+    rotateScope?: 'all' | 'odd' | 'even' | 'custom';
+    customPages?: string;
     quality: number;
     dpi: number;
-    type: 'text' | 'select' | 'reorder' | 'settings';
+    type: 'text' | 'select' | 'reorder' | 'settings' | 'rotate';
     options?: { label: string; value: string }[];
   } | null>(null);
 
@@ -447,7 +461,18 @@ export default function App() {
     });
   };
 
-  const handleProcess = async (files: FileList | File[], action: ToolAction, overrideValues?: { value?: string, quality?: number, dpi?: number }) => {
+  const handleProcess = async (
+    files: FileList | File[], 
+    action: ToolAction, 
+    overrideValues?: { 
+      value?: string; 
+      quality?: number; 
+      dpi?: number; 
+      rotateAngle?: number; 
+      rotateScope?: 'all' | 'odd' | 'even' | 'custom'; 
+      customPages?: string; 
+    }
+  ) => {
     const filesArray = Array.from(files);
     if (filesArray.length === 0) return;
 
@@ -456,7 +481,19 @@ export default function App() {
     const multiStepTools = ['MERGE_PDF', 'DELETE_PAGES', 'EXTRACT_PAGES'];
     
     if (!toolInput && !overrideValues) {
-      if (needsSettings) {
+      if (action === 'ROTATE_PDF') {
+        setToolInput({
+          action,
+          files: filesArray,
+          quality: globalQuality,
+          dpi: globalDpi,
+          rotateAngle: 90,
+          rotateScope: 'all',
+          customPages: '',
+          type: 'rotate'
+        });
+        return;
+      } else if (needsSettings) {
         setToolInput({
           action,
           files: filesArray,
@@ -493,12 +530,15 @@ export default function App() {
     const currentQuality = overrideValues?.quality ?? toolInput?.quality ?? globalQuality;
     const currentDpi = overrideValues?.dpi ?? toolInput?.dpi ?? globalDpi;
     const currentValue = overrideValues?.value ?? toolInput?.value ?? '';
+    const currentRotateAngle = overrideValues?.rotateAngle ?? toolInput?.rotateAngle ?? 90;
+    const currentRotateScope = overrideValues?.rotateScope ?? toolInput?.rotateScope ?? 'all';
+    const currentCustomPages = overrideValues?.customPages ?? toolInput?.customPages ?? '';
 
     // If coming from modal, close it now so status is visible and process starts
     setToolInput(null);
 
     // Validate file types for PDF tools
-    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES', 'PDF_TO_WORD'];
+    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES', 'PDF_TO_WORD', 'ROTATE_PDF'];
     if (pdfTools.includes(action)) {
       const nonPdfFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
       if (nonPdfFiles.length > 0) {
@@ -841,6 +881,63 @@ export default function App() {
           break;
         }
 
+        case 'ROTATE_PDF': {
+          const targetFiles = filesArray.length > 0 ? filesArray : processedFiles;
+          const customIndices = parsePageInput(currentCustomPages);
+          const zip = new JSZip();
+
+          for (let f = 0; f < targetFiles.length; f++) {
+            const file = targetFiles[f];
+            setStatus({ message: `Đang xoay PDF: ${f + 1}/${targetFiles.length} (${file.name})...`, type: 'loading' });
+            const arrayBuffer = await file.arrayBuffer();
+            const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const pages = pdfDoc.getPages();
+            const pageCount = pages.length;
+
+            if (currentRotateScope === 'custom' && customIndices.length === 0) {
+              throw new Error('Vui lòng nhập số trang hợp lệ cần xoay (ví dụ: 1, 3, 5-8).');
+            }
+
+            let rotatedCount = 0;
+            for (let i = 0; i < pageCount; i++) {
+              let shouldRotate = false;
+              if (currentRotateScope === 'all') {
+                shouldRotate = true;
+              } else if (currentRotateScope === 'odd') {
+                shouldRotate = (i % 2 === 0); // Trang 1, 3, 5...
+              } else if (currentRotateScope === 'even') {
+                shouldRotate = (i % 2 === 1); // Trang 2, 4, 6...
+              } else if (currentRotateScope === 'custom') {
+                shouldRotate = customIndices.includes(i);
+              }
+
+              if (shouldRotate) {
+                const page = pages[i];
+                const currentAngle = page.getRotation().angle || 0;
+                page.setRotation(degrees((currentAngle + currentRotateAngle) % 360));
+                rotatedCount++;
+              }
+            }
+
+            if (rotatedCount === 0) {
+              throw new Error('Không có trang nào phù hợp với phạm vi trang đã chọn.');
+            }
+
+            const pdfBytes = await pdfDoc.save();
+            const rotatedFileName = `${file.name.replace(/\.pdf$/i, '')}_rotated.pdf`;
+            zip.file(rotatedFileName, pdfBytes);
+          }
+
+          if (targetFiles.length > 1) {
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'rotated_pdfs.zip');
+          } else {
+            const key = Object.keys(zip.files)[0];
+            downloadBlob(await zip.file(key)!.async('blob'), key);
+          }
+          setStatus({ message: '✅ Đã xoay trang PDF thành công!', type: 'success' });
+          break;
+        }
+
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
@@ -1158,7 +1255,7 @@ export default function App() {
                         key={opt.value}
                         onClick={() => {
                           setToolInput({ ...toolInput, value: opt.value });
-                          handleProcess(toolInput.files, toolInput.action, opt.value);
+                          handleProcess(toolInput.files, toolInput.action, { value: opt.value });
                         }}
                         className={`py-4 rounded-xl font-bold transition-all border ${
                           toolInput.value === opt.value 
@@ -1170,6 +1267,88 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                ) : toolInput.type === 'rotate' ? (
+                  <div className="space-y-5">
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between text-xs text-slate-600">
+                      <span className="font-semibold truncate max-w-[260px]">
+                        {(Array.from(toolInput.files) as File[]).length === 1 
+                          ? (Array.from(toolInput.files) as File[])[0]?.name 
+                          : `${(Array.from(toolInput.files) as File[]).length} tệp PDF đã chọn`}
+                      </span>
+                      <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-bold">PDF</span>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">
+                        Góc xoay
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { angle: 90, label: '90° Phải (CW)', icon: <RotateCw className="w-5 h-5" /> },
+                          { angle: 180, label: '180° Đảo ngược', icon: <RotateCw className="w-5 h-5 rotate-180" /> },
+                          { angle: 270, label: '90° Trái (CCW)', icon: <RotateCcw className="w-5 h-5" /> },
+                        ].map((item) => (
+                          <button
+                            key={item.angle}
+                            type="button"
+                            onClick={() => setToolInput({ ...toolInput, rotateAngle: item.angle })}
+                            className={`p-3 rounded-xl flex flex-col items-center justify-center gap-1.5 border transition-all ${
+                              (toolInput.rotateAngle ?? 90) === item.angle
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-200'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300'
+                            }`}
+                          >
+                            {item.icon}
+                            <span className="text-[11px] font-bold text-center leading-tight">{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">
+                        Phạm vi trang áp dụng
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { id: 'all', label: 'Tất cả các trang' },
+                          { id: 'odd', label: 'Chỉ trang lẻ (1, 3, 5...)' },
+                          { id: 'even', label: 'Chỉ trang chẵn (2, 4, 6...)' },
+                          { id: 'custom', label: 'Tùy chọn số trang' },
+                        ].map((scopeItem) => (
+                          <button
+                            key={scopeItem.id}
+                            type="button"
+                            onClick={() => setToolInput({ ...toolInput, rotateScope: scopeItem.id as any })}
+                            className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all text-center ${
+                              (toolInput.rotateScope ?? 'all') === scopeItem.id
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-white text-slate-600 border-slate-200 hover:border-blue-200'
+                            }`}
+                          >
+                            {scopeItem.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {toolInput.rotateScope === 'custom' && (
+                        <div className="pt-2">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">
+                            Nhập số trang (ví dụ: 1, 3, 5-8)
+                          </label>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={toolInput.customPages ?? ''}
+                            onChange={(e) => setToolInput({ ...toolInput, customPages: e.target.value })}
+                            onKeyDown={(e) => e.key === 'Enter' && handleProcess(toolInput.files, toolInput.action)}
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all text-sm"
+                            placeholder="1, 3, 5-8..."
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 ) : null}
 
                 <div className="flex gap-3 pt-4">
@@ -1179,12 +1358,12 @@ export default function App() {
                   >
                     Hủy
                   </button>
-                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select' || toolInput.type === 'settings') && (
+                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select' || toolInput.type === 'settings' || toolInput.type === 'rotate') && (
                     <button
                       onClick={() => handleProcess(toolInput.files, toolInput.action)}
                       className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
                     >
-                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : 'Xác nhận'}
+                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : toolInput.type === 'rotate' ? 'Tiến hành Xoay' : 'Xác nhận'}
                     </button>
                   )}
                 </div>
