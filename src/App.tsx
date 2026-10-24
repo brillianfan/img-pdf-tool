@@ -387,6 +387,25 @@ export default function App() {
 
   const [globalQuality, setGlobalQuality] = useState(85);
   const [globalDpi, setGlobalDpi] = useState(300);
+  const mergeFileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOverMergeModal, setIsDragOverMergeModal] = useState(false);
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const moveFile = (fromIndex: number, toIndex: number) => {
+    if (!toolInput) return;
+    const current = [...(Array.from(toolInput.files) as File[])];
+    if (toIndex < 0 || toIndex >= current.length) return;
+    const item = current.splice(fromIndex, 1)[0];
+    current.splice(toIndex, 0, item);
+    setToolInput({ ...toolInput, files: current });
+  };
 
   const convertHeicToJpg = async (file: File): Promise<File> => {
     if (file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif')) {
@@ -997,6 +1016,21 @@ export default function App() {
   const onDrop = (e: React.DragEvent, action: ToolAction) => {
     e.preventDefault();
     setIsDragging(null);
+    if (action === 'MERGE_PDF') {
+      const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
+        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf.', type: 'error' });
+        return;
+      }
+      setToolInput({
+        action: 'MERGE_PDF',
+        files: droppedPdfs,
+        quality: globalQuality,
+        dpi: globalDpi,
+        type: 'reorder',
+      });
+      return;
+    }
     handleProcess(e.dataTransfer.files, action);
   };
 
@@ -1062,6 +1096,14 @@ export default function App() {
                   window.open('https://ai.studio/apps/d046bb29-3951-4c90-8ef4-df4d51fbb84f?fullscreenApplet=true', '_blank');
                 } else if (tool.id === 'SDVN_PHOTO_EDIT') {
                   window.open('https://aistudio.google.com/app/apps/d798af97-ec18-4946-bce4-3b5b0e7d403e?showPreview=true&showAssistant=true&fullscreenApplet=true', '_blank');
+                } else if (tool.id === 'MERGE_PDF') {
+                  setToolInput({
+                    action: 'MERGE_PDF',
+                    files: [],
+                    quality: globalQuality,
+                    dpi: globalDpi,
+                    type: 'reorder',
+                  });
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
@@ -1127,13 +1169,29 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className={`relative bg-white rounded-3xl shadow-2xl p-8 w-full ${toolInput.type === 'reorder' ? 'max-w-2xl' : 'max-w-md'}`}
+              className={`relative bg-white rounded-3xl shadow-2xl p-6 sm:p-7 w-full max-h-[85vh] flex flex-col ${toolInput.type === 'reorder' ? 'max-w-2xl' : 'max-w-md'}`}
             >
-              <h2 className="text-xl font-bold text-slate-800 mb-4">
-                {TOOLS.find(t => t.id === toolInput.action)?.title}
-              </h2>
+              <div className="flex items-start justify-between pb-3 border-b border-slate-100 flex-shrink-0">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">
+                    {toolInput.action === 'MERGE_PDF' ? 'Gộp nhiều tệp PDF (Merge PDF)' : TOOLS.find(t => t.id === toolInput.action)?.title}
+                  </h2>
+                  {toolInput.action === 'MERGE_PDF' && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Tải lên các tệp từ máy tính, sắp xếp thứ tự và gộp thành một file PDF duy nhất.
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setToolInput(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
               
-              <div className="space-y-6">
+              <div className="flex-1 min-h-0 overflow-y-auto py-3.5 pr-1 space-y-4 custom-scrollbar">
                 {(toolInput.type === 'settings' || ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(toolInput.action)) && (
                    <div className="space-y-6 bg-slate-50 p-6 rounded-2xl border border-slate-100">
                       {['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE'].includes(toolInput.action) && (
@@ -1214,40 +1272,250 @@ export default function App() {
                     />
                   </div>
                 ) : toolInput.type === 'reorder' ? (
-                  <Reorder.Group 
-                    axis="y" 
-                    values={Array.from(toolInput.files) as File[]} 
-                    onReorder={(newFiles) => setToolInput({ ...toolInput, files: newFiles })}
-                    className="space-y-2 max-h-96 overflow-y-auto pr-2 custom-scrollbar p-1"
-                  >
-                    {(Array.from(toolInput.files) as File[]).map((file, idx) => (
-                      <Reorder.Item 
-                        key={`${file.name}-${idx}`} 
-                        value={file}
-                        className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl group cursor-grab active:cursor-grabbing hover:border-blue-200 transition-colors"
+                  <div className="space-y-4">
+                    {/* Hidden input to pick more files from any folder on PC */}
+                    <input
+                      ref={mergeFileInputRef}
+                      type="file"
+                      multiple
+                      accept=".pdf"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          const added = (Array.from(e.target.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+                          if (added.length === 0) {
+                            setStatus({ message: '❌ Chỉ hỗ trợ tệp định dạng .pdf', type: 'error' });
+                            return;
+                          }
+                          const current = (Array.from(toolInput.files) as File[]);
+                          setToolInput({
+                            ...toolInput,
+                            files: [...current, ...added]
+                          });
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+
+                    {/* Upload / Drag & Drop Zone */}
+                    {(Array.from(toolInput.files) as File[]).length === 0 ? (
+                      <div
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(false);
+                          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            const added = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+                            if (added.length === 0) {
+                              setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf', type: 'error' });
+                              return;
+                            }
+                            const current = (Array.from(toolInput.files) as File[]);
+                            setToolInput({
+                              ...toolInput,
+                              files: [...current, ...added]
+                            });
+                          }
+                        }}
+                        onClick={() => mergeFileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 ${
+                          isDragOverMergeModal
+                            ? 'border-blue-500 bg-blue-50/70 scale-[1.01]'
+                            : 'border-slate-200 bg-slate-50/70 hover:bg-slate-50 hover:border-blue-400'
+                        }`}
                       >
-                        <GripVertical className="w-4 h-4 text-slate-300 group-hover:text-blue-400" />
-                        <span className="flex-1 text-sm font-medium text-slate-700 truncate">{file.name}</span>
-                        <div className="flex gap-1">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const newFiles = (Array.from(toolInput.files) as File[]).filter((_, i) => i !== idx);
-                              if (newFiles.length < 2) {
-                                setToolInput(null);
-                                setStatus({ message: 'Cần ít nhất 2 file để gộp!', type: 'error' });
-                              } else {
-                                setToolInput({ ...toolInput, files: newFiles });
-                              }
-                            }}
-                            className="p-1.5 hover:bg-white rounded-lg text-slate-400 hover:text-rose-600 transition-all"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                        <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                          <Upload className="w-5 h-5" />
                         </div>
-                      </Reorder.Item>
-                    ))}
-                  </Reorder.Group>
+                        <div>
+                          <p className="text-sm font-bold text-slate-800">
+                            Bấm để tải lên PDF từ máy tính hoặc kéo thả tệp vào đây
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            Có thể chọn nhiều lần từ nhiều thư mục khác nhau (Desktop, Downloads,...)
+                          </p>
+                        </div>
+                        <div className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold shadow-sm hover:bg-blue-700 transition-colors mt-1">
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Chọn tệp PDF</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDragOverMergeModal(false);
+                          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            const added = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+                            if (added.length === 0) {
+                              setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf', type: 'error' });
+                              return;
+                            }
+                            const current = (Array.from(toolInput.files) as File[]);
+                            setToolInput({
+                              ...toolInput,
+                              files: [...current, ...added]
+                            });
+                          }
+                        }}
+                        onClick={() => mergeFileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-xl p-3 bg-slate-50/80 hover:bg-blue-50/50 hover:border-blue-400 transition-all flex items-center justify-between gap-3 cursor-pointer ${
+                          isDragOverMergeModal ? 'border-blue-500 bg-blue-50/70 scale-[1.01]' : 'border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0">
+                            <Upload className="w-4 h-4" />
+                          </div>
+                          <div className="truncate">
+                            <p className="text-xs font-bold text-slate-800 truncate">
+                              Kéo thả thêm tệp PDF vào đây hoặc bấm để chọn
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              Có thể tải thêm từ các thư mục khác nhau trên máy tính
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold shadow-sm hover:bg-blue-700 transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Thêm tệp</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* File list header */}
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                        Danh sách tệp ({(Array.from(toolInput.files) as File[]).length} tệp)
+                        {(Array.from(toolInput.files) as File[]).length > 0 && (
+                          <span className="text-slate-400 font-normal ml-2">
+                            • Tổng: {formatBytes((Array.from(toolInput.files) as File[]).reduce((acc, f) => acc + f.size, 0))}
+                          </span>
+                        )}
+                      </span>
+                      {(Array.from(toolInput.files) as File[]).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setToolInput({ ...toolInput, files: [] })}
+                          className="text-xs text-rose-500 hover:text-rose-700 font-semibold hover:underline"
+                        >
+                          Xóa tất cả
+                        </button>
+                      )}
+                    </div>
+
+                    {/* File list items */}
+                    {(Array.from(toolInput.files) as File[]).length === 0 ? (
+                      <div className="py-8 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-slate-100">
+                        Chưa có tệp nào được chọn. Hãy bấm vào khung trên hoặc kéo thả tệp PDF vào để bắt đầu.
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                        <Reorder.Group
+                          axis="y"
+                          values={Array.from(toolInput.files) as File[]}
+                          onReorder={(newFiles) => setToolInput({ ...toolInput, files: newFiles })}
+                          className="space-y-2 p-0.5"
+                        >
+                          {(Array.from(toolInput.files) as File[]).map((file, idx) => (
+                            <Reorder.Item
+                              key={`${file.name}-${file.size}-${file.lastModified}-${idx}`}
+                              value={file}
+                              className="flex items-center gap-2.5 p-2.5 bg-white border border-slate-200 rounded-xl group cursor-grab active:cursor-grabbing hover:border-blue-400 hover:shadow-sm transition-all select-none"
+                            >
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <GripVertical className="w-4 h-4 text-slate-300 group-hover:text-blue-500" />
+                                <span className="w-6 h-6 rounded-lg bg-blue-50 text-blue-700 font-bold text-xs flex items-center justify-center">
+                                  {idx + 1}
+                                </span>
+                              </div>
+
+                              <div className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0">
+                                <FileText className="w-4 h-4" />
+                              </div>
+
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 truncate" title={file.name}>
+                                  {file.name}
+                                </p>
+                                <p className="text-[10px] text-slate-400">
+                                  {formatBytes(file.size)}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={idx === 0}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    moveFile(idx, idx - 1);
+                                  }}
+                                  title="Di chuyển lên trên"
+                                  className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:hover:bg-transparent transition-all"
+                                >
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={idx === (Array.from(toolInput.files) as File[]).length - 1}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    moveFile(idx, idx + 1);
+                                  }}
+                                  title="Di chuyển xuống dưới"
+                                  className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:hover:bg-transparent transition-all"
+                                >
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const current = Array.from(toolInput.files) as File[];
+                                    const newFiles = current.filter((_, i) => i !== idx);
+                                    setToolInput({ ...toolInput, files: newFiles });
+                                  }}
+                                  title="Xóa tệp này"
+                                  className="p-1 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-600 transition-all ml-0.5"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </Reorder.Item>
+                          ))}
+                        </Reorder.Group>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] text-slate-400 italic">
+                      * Thứ tự các tệp từ trên xuống dưới chính là thứ tự ghép trang trong file hoàn chỉnh.
+                    </p>
+                  </div>
                 ) : toolInput.type === 'select' ? (
                   <div className="grid grid-cols-2 gap-3">
                     {toolInput.options?.map(opt => (
@@ -1350,23 +1618,48 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
+              </div>
 
-                <div className="flex gap-3 pt-4">
+              {/* Pinned Sticky Footer */}
+              <div className="flex gap-3 pt-3.5 border-t border-slate-100 flex-shrink-0 bg-white mt-1">
+                <button
+                  type="button"
+                  onClick={() => setToolInput(null)}
+                  className="flex-1 px-6 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  Hủy
+                </button>
+                {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select' || toolInput.type === 'settings' || toolInput.type === 'rotate') && (
                   <button
-                    onClick={() => setToolInput(null)}
-                    className="flex-1 px-6 py-3 border border-slate-100 rounded-xl font-bold text-slate-500 hover:bg-slate-50 transition-colors"
+                    type="button"
+                    disabled={toolInput.type === 'reorder' && (Array.from(toolInput.files) as File[]).length < 2}
+                    onClick={() => {
+                      if (toolInput.type === 'reorder') {
+                        const filesArr = Array.from(toolInput.files) as File[];
+                        if (filesArr.length < 2) {
+                          setStatus({ message: '❌ Cần ít nhất 2 tệp PDF để gộp.', type: 'error' });
+                          return;
+                        }
+                        handleProcess(filesArr, toolInput.action, { value: 'confirmed' });
+                      } else {
+                        handleProcess(toolInput.files, toolInput.action);
+                      }
+                    }}
+                    className={`flex-1 px-6 py-3 rounded-xl font-bold transition-all ${
+                      toolInput.type === 'reorder' && (Array.from(toolInput.files) as File[]).length < 2
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                        : 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-200'
+                    }`}
                   >
-                    Hủy
+                    {toolInput.type === 'reorder' 
+                      ? ((Array.from(toolInput.files) as File[]).length >= 2 
+                          ? `Tiến hành Gộp (${(Array.from(toolInput.files) as File[]).length} tệp)` 
+                          : ((Array.from(toolInput.files) as File[]).length === 0 ? 'Chưa chọn tệp PDF' : 'Cần ít nhất 2 tệp để gộp'))
+                      : toolInput.type === 'rotate' 
+                      ? 'Tiến hành Xoay' 
+                      : 'Xác nhận'}
                   </button>
-                  {(toolInput.type === 'text' || toolInput.type === 'reorder' || toolInput.type === 'select' || toolInput.type === 'settings' || toolInput.type === 'rotate') && (
-                    <button
-                      onClick={() => handleProcess(toolInput.files, toolInput.action)}
-                      className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
-                    >
-                      {toolInput.type === 'reorder' ? 'Tiến hành Gộp' : toolInput.type === 'rotate' ? 'Tiến hành Xoay' : 'Xác nhận'}
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
             </motion.div>
           </div>
