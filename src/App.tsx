@@ -37,6 +37,7 @@ import JSZip from 'jszip';
 import heic2any from 'heic2any';
 import { changeDpi } from './lib/dpiUtils';
 import { convertDocxToPdf, convertDocToPdf } from './lib/docxToPdf';
+import { PdfSplitModal } from './components/PdfSplitModal';
 // Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
@@ -389,6 +390,8 @@ export default function App() {
   const [globalDpi, setGlobalDpi] = useState(300);
   const mergeFileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOverMergeModal, setIsDragOverMergeModal] = useState(false);
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitModalFile, setSplitModalFile] = useState<File | null>(null);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -500,7 +503,16 @@ export default function App() {
     const multiStepTools = ['MERGE_PDF', 'DELETE_PAGES', 'EXTRACT_PAGES'];
     
     if (!toolInput && !overrideValues) {
-      if (action === 'ROTATE_PDF') {
+      if (action === 'SPLIT_PDF') {
+        const pdfFiles = filesArray.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+        if (pdfFiles.length === 0) {
+          setStatus({ message: `❌ Vui lòng chỉ chọn tệp định dạng .pdf.`, type: 'error' });
+          return;
+        }
+        setSplitModalFile(pdfFiles[0]);
+        setShowSplitModal(true);
+        return;
+      } else if (action === 'ROTATE_PDF') {
         setToolInput({
           action,
           files: filesArray,
@@ -1013,6 +1025,94 @@ export default function App() {
     }, 1000);
   };
 
+  const handleExecuteSplit = async (
+    file: File, 
+    mode: 'all_pages' | 'custom_cuts', 
+    cutPoints: number[]
+  ) => {
+    setStatus({ message: `Đang chuẩn bị tách tệp: ${file.name}...`, type: 'loading' });
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+      const totalPages = pdfDoc.getPageCount();
+      const baseName = file.name.replace(/\.pdf$/i, '');
+
+      if (mode === 'all_pages') {
+        const zip = new JSZip();
+        const padding = totalPages.toString().length;
+        for (let i = 0; i < totalPages; i++) {
+          setStatus({ message: `Đang trích xuất trang ${i + 1}/${totalPages}...`, type: 'loading' });
+          const newPdf = await PDFDocument.create();
+          const [page] = await newPdf.copyPages(pdfDoc, [i]);
+          newPdf.addPage(page);
+          const pdfBytes = await newPdf.save();
+          const pageStr = (i + 1).toString().padStart(padding, '0');
+          zip.file(`${baseName}_page_${pageStr}.pdf`, pdfBytes);
+        }
+        setStatus({ message: 'Đang tạo tệp nén ZIP...', type: 'loading' });
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        downloadBlob(zipBlob, `${baseName}_split_all_pages.zip`);
+        setStatus({ message: `✅ Đã tách toàn bộ ${totalPages} trang thành công!`, type: 'success' });
+      } else {
+        // Custom cuts
+        const sortedCuts = [...cutPoints].sort((a, b) => a - b);
+        const parts: { partIndex: number; startPage: number; endPage: number }[] = [];
+        let currentStart = 1;
+
+        sortedCuts.forEach((cut, idx) => {
+          if (cut >= currentStart && cut <= totalPages) {
+            parts.push({
+              partIndex: idx + 1,
+              startPage: currentStart,
+              endPage: cut,
+            });
+            currentStart = cut + 1;
+          }
+        });
+
+        if (currentStart <= totalPages) {
+          parts.push({
+            partIndex: parts.length + 1,
+            startPage: currentStart,
+            endPage: totalPages,
+          });
+        }
+
+        if (parts.length === 1) {
+          const subDoc = await PDFDocument.create();
+          const copiedPages = await subDoc.copyPages(pdfDoc, pdfDoc.getPageIndices());
+          copiedPages.forEach(p => subDoc.addPage(p));
+          const pdfBytes = await subDoc.save();
+          downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), `${baseName}_part1.pdf`);
+          setStatus({ message: '✅ Đã lưu tệp PDF thành công!', type: 'success' });
+        } else {
+          const zip = new JSZip();
+          for (let pIdx = 0; pIdx < parts.length; pIdx++) {
+            const part = parts[pIdx];
+            setStatus({ message: `Đang trích xuất Phần ${part.partIndex}/${parts.length} (Trang ${part.startPage}-${part.endPage})...`, type: 'loading' });
+            const subDoc = await PDFDocument.create();
+            const pageIndices: number[] = [];
+            for (let p = part.startPage - 1; p <= part.endPage - 1; p++) {
+              pageIndices.push(p);
+            }
+            const copiedPages = await subDoc.copyPages(pdfDoc, pageIndices);
+            copiedPages.forEach(p => subDoc.addPage(p));
+            const pdfBytes = await subDoc.save();
+            const partFileName = `${baseName}_part_${part.partIndex}_pages_${part.startPage}-${part.endPage}.pdf`;
+            zip.file(partFileName, pdfBytes);
+          }
+          setStatus({ message: 'Đang tạo tệp nén ZIP...', type: 'loading' });
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          downloadBlob(zipBlob, `${baseName}_split_${parts.length}_parts.zip`);
+          setStatus({ message: `✅ Đã tách thành ${parts.length} tệp PDF thành công!`, type: 'success' });
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ message: `❌ Lỗi khi tách PDF: ${err.message || 'Không xác định'}`, type: 'error' });
+    }
+  };
+
   const onDrop = (e: React.DragEvent, action: ToolAction) => {
     e.preventDefault();
     setIsDragging(null);
@@ -1029,6 +1129,18 @@ export default function App() {
         dpi: globalDpi,
         type: 'reorder',
       });
+      return;
+    }
+    if (action === 'SPLIT_PDF') {
+      const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
+        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf.', type: 'error' });
+        return;
+      }
+      if (droppedPdfs.length > 0) {
+        setSplitModalFile(droppedPdfs[0]);
+        setShowSplitModal(true);
+      }
       return;
     }
     handleProcess(e.dataTransfer.files, action);
@@ -1071,7 +1183,7 @@ export default function App() {
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Bộ công cụ thông minh cho văn phòng
           </p>
-          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">v.2.0.3 • Pro Edition</p>
+          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">V.2.0.4 • Pro Edition</p>
         </motion.div>
       </header>
 
@@ -1104,6 +1216,9 @@ export default function App() {
                     dpi: globalDpi,
                     type: 'reorder',
                   });
+                } else if (tool.id === 'SPLIT_PDF') {
+                  setSplitModalFile(null);
+                  setShowSplitModal(true);
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
@@ -1710,7 +1825,7 @@ export default function App() {
                   </div>
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Phiên bản</div>
-                    <div className="text-slate-700 font-bold">v2.0.3 - Pro Edition</div>
+                    <div className="text-slate-700 font-bold">V.2.0.4 - Pro Edition</div>
                   </div>
                   <a 
                     href="https://fb.com/minhtri.pham.1997" 
@@ -1737,6 +1852,20 @@ export default function App() {
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* Interactive Split PDF Modal */}
+      <AnimatePresence>
+        {showSplitModal && (
+          <PdfSplitModal
+            initialFile={splitModalFile}
+            onClose={() => {
+              setShowSplitModal(false);
+              setSplitModalFile(null);
+            }}
+            onExecuteSplit={handleExecuteSplit}
+          />
         )}
       </AnimatePresence>
 
