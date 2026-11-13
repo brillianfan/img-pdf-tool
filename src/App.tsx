@@ -28,7 +28,8 @@ import {
   ArrowUp,
   ArrowDown,
   GripVertical,
-  Facebook
+  Facebook,
+  FilePlus2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -38,6 +39,9 @@ import heic2any from 'heic2any';
 import { changeDpi } from './lib/dpiUtils';
 import { convertDocxToPdf, convertDocToPdf } from './lib/docxToPdf';
 import { PdfSplitModal } from './components/PdfSplitModal';
+import { ImageRotateModal } from './components/ImageRotateModal';
+import { PdfInsertModal } from './components/PdfInsertModal';
+import { rotateImagePreserveOriginal } from './lib/imageRotate';
 // Removed AIOCRTool as per user request to use Iframe instead
 
 // Set up PDF.js worker using unpkg for better reliability with .mjs files
@@ -50,8 +54,10 @@ type ToolAction =
   | 'COMPRESS_PDF' 
   | 'CONVERT_IMAGE' 
   | 'MERGE_PDF' 
+  | 'INSERT_PDF'
   | 'SPLIT_PDF' 
   | 'ROTATE_PDF'
+  | 'ROTATE_IMAGE'
   | 'DELETE_PAGES'
   | 'EXTRACT_TEXT_AI'
   | 'PHOTOPEA'
@@ -120,6 +126,14 @@ const TOOLS: Tool[] = [
     multiple: true
   },
   { 
+    id: 'INSERT_PDF', 
+    title: 'Chèn PDF vào PDF khác', 
+    icon: <FilePlus2 className="w-10 h-10 text-teal-600" />, 
+    description: 'Chèn một tệp PDF (hoặc các trang tùy chọn) vào vị trí bất kỳ trong tệp PDF khác',
+    accept: '.pdf',
+    multiple: true
+  },
+  { 
     id: 'SPLIT_PDF', 
     title: 'Tách 1 PDF thành nhiều trang', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
@@ -133,6 +147,14 @@ const TOOLS: Tool[] = [
     icon: <RotateCw className="w-10 h-10 text-slate-700" />, 
     description: 'Xoay các trang PDF theo góc 90°, 180°, 270°',
     accept: '.pdf',
+    multiple: true
+  },
+  { 
+    id: 'ROTATE_IMAGE', 
+    title: 'Xoay ảnh (Giữ nguyên gốc)', 
+    icon: <RotateCw className="w-10 h-10 text-indigo-600" />, 
+    description: 'Xoay ảnh 90°, 180°, 270° giữ nguyên kích thước pixel, DPI và chất lượng gốc',
+    accept: 'image/*,.heic,.heif,.jfif,.tif,.tiff,.bmp,.webp,.avif,.gif',
     multiple: true
   },
   { 
@@ -392,6 +414,11 @@ export default function App() {
   const [isDragOverMergeModal, setIsDragOverMergeModal] = useState(false);
   const [showSplitModal, setShowSplitModal] = useState(false);
   const [splitModalFile, setSplitModalFile] = useState<File | null>(null);
+  const [showRotateImageModal, setShowRotateImageModal] = useState(false);
+  const [rotateImageModalFiles, setRotateImageModalFiles] = useState<File[]>([]);
+  const [showInsertPdfModal, setShowInsertPdfModal] = useState(false);
+  const [insertPdfBaseFile, setInsertPdfBaseFile] = useState<File | null>(null);
+  const [insertPdfInsertFile, setInsertPdfInsertFile] = useState<File | null>(null);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -1113,6 +1140,152 @@ export default function App() {
     }
   };
 
+  const handleExecuteRotateImages = async (items: { file: File; angle: number }[]) => {
+    if (items.length === 0) return;
+    setStatus({ message: 'Đang chuẩn bị xoay ảnh giữ nguyên chất lượng gốc...', type: 'loading' });
+
+    try {
+      const results: { blob: Blob; filename: string }[] = [];
+      const usedNames = new Set<string>();
+
+      const getUniqueFilename = (desired: string) => {
+        if (!usedNames.has(desired)) {
+          usedNames.add(desired);
+          return desired;
+        }
+        const dotIdx = desired.lastIndexOf('.');
+        const stem = dotIdx > 0 ? desired.slice(0, dotIdx) : desired;
+        const ext = dotIdx > 0 ? desired.slice(dotIdx) : '';
+        let counter = 2;
+        while (usedNames.has(`${stem}_${counter}${ext}`)) {
+          counter++;
+        }
+        const unique = `${stem}_${counter}${ext}`;
+        usedNames.add(unique);
+        return unique;
+      };
+
+      for (let i = 0; i < items.length; i++) {
+        const { file, angle } = items[i];
+        const normAngle = ((angle % 360) + 360) % 360;
+        setStatus({
+          message: `Đang xoay ảnh ${i + 1}/${items.length}: ${file.name}...`,
+          type: 'loading',
+        });
+
+        if (normAngle === 0) {
+          results.push({
+            blob: file,
+            filename: getUniqueFilename(file.name),
+          });
+          continue;
+        }
+
+        const rotated = await rotateImagePreserveOriginal(file, normAngle);
+        if (!rotated.blob || rotated.blob.size === 0 || !rotated.blob.type.startsWith('image/')) {
+          throw new Error(`Tệp ảnh đầu ra không hợp lệ cho: ${file.name}`);
+        }
+
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+        const outFilename = getUniqueFilename(`${baseName}_rotated.${rotated.extension}`);
+
+        results.push({
+          blob: rotated.blob,
+          filename: outFilename,
+        });
+      }
+
+      if (results.length === 1) {
+        downloadBlob(results[0].blob, results[0].filename);
+      } else {
+        setStatus({ message: 'Đang đóng gói tệp ZIP...', type: 'loading' });
+        const zip = new JSZip();
+        for (const res of results) {
+          zip.file(res.filename, await res.blob.arrayBuffer());
+        }
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        downloadBlob(zipBlob, 'rotated_images.zip');
+      }
+
+      setStatus({
+        message: `✅ Đã xoay ${results.length} ảnh thành công (giữ nguyên kích thước & chất lượng gốc)!`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ message: `❌ ${err.message || 'Có lỗi xảy ra khi xoay ảnh.'}`, type: 'error' });
+      throw err;
+    }
+  };
+
+  const handleExecuteInsertPdf = async ({
+    baseFile,
+    insertFile,
+    insertAfterPage,
+    insertPageRange,
+  }: {
+    baseFile: File;
+    insertFile: File;
+    insertAfterPage: number;
+    insertPageRange: string;
+  }) => {
+    setStatus({ message: 'Đang chèn các trang PDF...', type: 'loading' });
+    try {
+      const [baseBuf, insertBuf] = await Promise.all([
+        baseFile.arrayBuffer(),
+        insertFile.arrayBuffer(),
+      ]);
+
+      const basePdf = await PDFDocument.load(baseBuf, { ignoreEncryption: true });
+      const insertPdf = await PDFDocument.load(insertBuf, { ignoreEncryption: true });
+
+      const baseTotal = basePdf.getPageCount();
+      const insertTotal = insertPdf.getPageCount();
+
+      const rawInsertIndices = insertPageRange.trim()
+        ? parsePageInput(insertPageRange).filter((idx) => idx >= 0 && idx < insertTotal)
+        : insertPdf.getPageIndices();
+
+      if (rawInsertIndices.length === 0) {
+        throw new Error('Không có trang hợp lệ nào được chọn từ tệp PDF cần chèn.');
+      }
+
+      const clampedAfter = Math.max(0, Math.min(insertAfterPage, baseTotal));
+      const outPdf = await PDFDocument.create();
+
+      if (clampedAfter > 0) {
+        const beforeIndices = Array.from({ length: clampedAfter }, (_, i) => i);
+        const beforePages = await outPdf.copyPages(basePdf, beforeIndices);
+        beforePages.forEach((p) => outPdf.addPage(p));
+      }
+
+      const insertedPages = await outPdf.copyPages(insertPdf, rawInsertIndices);
+      insertedPages.forEach((p) => outPdf.addPage(p));
+
+      if (clampedAfter < baseTotal) {
+        const afterIndices = Array.from(
+          { length: baseTotal - clampedAfter },
+          (_, i) => clampedAfter + i
+        );
+        const afterPages = await outPdf.copyPages(basePdf, afterIndices);
+        afterPages.forEach((p) => outPdf.addPage(p));
+      }
+
+      const outBytes = await outPdf.save();
+      const baseName = baseFile.name.replace(/\.pdf$/i, '');
+      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), `${baseName}_inserted.pdf`);
+
+      setStatus({
+        message: `✅ Đã chèn ${rawInsertIndices.length} trang vào PDF thành công (Tổng ${baseTotal + rawInsertIndices.length} trang)!`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ message: `❌ ${err.message || 'Có lỗi xảy ra khi chèn PDF.'}`, type: 'error' });
+      throw err;
+    }
+  };
+
   const onDrop = (e: React.DragEvent, action: ToolAction) => {
     e.preventDefault();
     setIsDragging(null);
@@ -1131,6 +1304,17 @@ export default function App() {
       });
       return;
     }
+    if (action === 'INSERT_PDF') {
+      const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
+        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf.', type: 'error' });
+        return;
+      }
+      setInsertPdfBaseFile(droppedPdfs[0] ?? null);
+      setInsertPdfInsertFile(droppedPdfs[1] ?? null);
+      setShowInsertPdfModal(true);
+      return;
+    }
     if (action === 'SPLIT_PDF') {
       const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
       if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
@@ -1141,6 +1325,18 @@ export default function App() {
         setSplitModalFile(droppedPdfs[0]);
         setShowSplitModal(true);
       }
+      return;
+    }
+    if (action === 'ROTATE_IMAGE') {
+      const droppedImages = (Array.from(e.dataTransfer.files) as File[]).filter(f =>
+        f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|tiff?|jfif|heic|heif|avif)$/i.test(f.name)
+      );
+      if (droppedImages.length === 0 && e.dataTransfer.files.length > 0) {
+        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp hình ảnh.', type: 'error' });
+        return;
+      }
+      setRotateImageModalFiles(droppedImages);
+      setShowRotateImageModal(true);
       return;
     }
     handleProcess(e.dataTransfer.files, action);
@@ -1216,9 +1412,16 @@ export default function App() {
                     dpi: globalDpi,
                     type: 'reorder',
                   });
+                } else if (tool.id === 'INSERT_PDF') {
+                  setInsertPdfBaseFile(null);
+                  setInsertPdfInsertFile(null);
+                  setShowInsertPdfModal(true);
                 } else if (tool.id === 'SPLIT_PDF') {
                   setSplitModalFile(null);
                   setShowSplitModal(true);
+                } else if (tool.id === 'ROTATE_IMAGE') {
+                  setRotateImageModalFiles([]);
+                  setShowRotateImageModal(true);
                 } else {
                   setActiveTool(tool.id);
                   fileInputRef.current?.click();
@@ -1865,6 +2068,36 @@ export default function App() {
               setSplitModalFile(null);
             }}
             onExecuteSplit={handleExecuteSplit}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Interactive Rotate Image Modal (Preserve original size & quality) */}
+      <AnimatePresence>
+        {showRotateImageModal && (
+          <ImageRotateModal
+            initialFiles={rotateImageModalFiles}
+            onClose={() => {
+              setShowRotateImageModal(false);
+              setRotateImageModalFiles([]);
+            }}
+            onExecuteRotate={handleExecuteRotateImages}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Interactive Insert PDF Modal */}
+      <AnimatePresence>
+        {showInsertPdfModal && (
+          <PdfInsertModal
+            initialBaseFile={insertPdfBaseFile}
+            initialInsertFile={insertPdfInsertFile}
+            onClose={() => {
+              setShowInsertPdfModal(false);
+              setInsertPdfBaseFile(null);
+              setInsertPdfInsertFile(null);
+            }}
+            onExecuteInsert={handleExecuteInsertPdf}
           />
         )}
       </AnimatePresence>
