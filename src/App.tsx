@@ -29,7 +29,8 @@ import {
   ArrowDown,
   GripVertical,
   Facebook,
-  FilePlus2
+  FilePlus2,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -41,6 +42,7 @@ import { convertDocxToPdf, convertDocToPdf } from './lib/docxToPdf';
 import { PdfSplitModal } from './components/PdfSplitModal';
 import { ImageRotateModal } from './components/ImageRotateModal';
 import { PdfInsertModal } from './components/PdfInsertModal';
+import { PdfOrganizeModal } from './components/PdfOrganizeModal';
 import { rotateImagePreserveOriginal } from './lib/imageRotate';
 // Removed AIOCRTool as per user request to use Iframe instead
 
@@ -56,9 +58,8 @@ type ToolAction =
   | 'MERGE_PDF' 
   | 'INSERT_PDF'
   | 'SPLIT_PDF' 
-  | 'ROTATE_PDF'
+  | 'ORGANIZE_PDF'
   | 'ROTATE_IMAGE'
-  | 'DELETE_PAGES'
   | 'EXTRACT_TEXT_AI'
   | 'PHOTOPEA'
   | 'AUDIO_TO_TEXT'
@@ -142,12 +143,12 @@ const TOOLS: Tool[] = [
     multiple: true
   },
   { 
-    id: 'ROTATE_PDF', 
-    title: 'Xoay trang PDF', 
-    icon: <RotateCw className="w-10 h-10 text-slate-700" />, 
-    description: 'Xoay các trang PDF theo góc 90°, 180°, 270°',
+    id: 'ORGANIZE_PDF', 
+    title: 'Sắp xếp, Xoay & Xóa trang PDF', 
+    icon: <Layers className="w-10 h-10 text-blue-600" />, 
+    description: 'Sắp xếp lại thứ tự trang, xoay trang và xóa trang PDF trực quan trong một công cụ',
     accept: '.pdf',
-    multiple: true
+    multiple: false
   },
   { 
     id: 'ROTATE_IMAGE', 
@@ -171,14 +172,6 @@ const TOOLS: Tool[] = [
     icon: <FileText className="w-10 h-10 text-emerald-600" />, 
     description: 'Chuyển đổi tài liệu Word (.docx, .doc) của bạn thành tệp PDF',
     accept: '.docx,.doc',
-    multiple: true
-  },
-  { 
-    id: 'DELETE_PAGES', 
-    title: 'Xóa trang PDF', 
-    icon: <Trash2 className="w-10 h-10 text-slate-700" />, 
-    description: 'Loại bỏ các trang không mong muốn khỏi PDF',
-    accept: '.pdf',
     multiple: true
   },
   { 
@@ -419,6 +412,8 @@ export default function App() {
   const [showInsertPdfModal, setShowInsertPdfModal] = useState(false);
   const [insertPdfBaseFile, setInsertPdfBaseFile] = useState<File | null>(null);
   const [insertPdfInsertFile, setInsertPdfInsertFile] = useState<File | null>(null);
+  const [showOrganizePdfModal, setShowOrganizePdfModal] = useState(false);
+  const [organizePdfFile, setOrganizePdfFile] = useState<File | null>(null);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -527,7 +522,7 @@ export default function App() {
 
     // Determine if we need to show a settings modal before processing
     const needsSettings = ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(action);
-    const multiStepTools = ['MERGE_PDF', 'DELETE_PAGES', 'EXTRACT_PAGES'];
+    const multiStepTools = ['MERGE_PDF', 'EXTRACT_PAGES'];
     
     if (!toolInput && !overrideValues) {
       if (action === 'SPLIT_PDF') {
@@ -539,17 +534,14 @@ export default function App() {
         setSplitModalFile(pdfFiles[0]);
         setShowSplitModal(true);
         return;
-      } else if (action === 'ROTATE_PDF') {
-        setToolInput({
-          action,
-          files: filesArray,
-          quality: globalQuality,
-          dpi: globalDpi,
-          rotateAngle: 90,
-          rotateScope: 'all',
-          customPages: '',
-          type: 'rotate'
-        });
+      } else if (action === 'ORGANIZE_PDF') {
+        const pdfFiles = filesArray.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+        if (pdfFiles.length === 0) {
+          setStatus({ message: `❌ Vui lòng chỉ chọn tệp định dạng .pdf.`, type: 'error' });
+          return;
+        }
+        setOrganizePdfFile(pdfFiles[0]);
+        setShowOrganizePdfModal(true);
         return;
       } else if (needsSettings) {
         setToolInput({
@@ -588,15 +580,12 @@ export default function App() {
     const currentQuality = overrideValues?.quality ?? toolInput?.quality ?? globalQuality;
     const currentDpi = overrideValues?.dpi ?? toolInput?.dpi ?? globalDpi;
     const currentValue = overrideValues?.value ?? toolInput?.value ?? '';
-    const currentRotateAngle = overrideValues?.rotateAngle ?? toolInput?.rotateAngle ?? 90;
-    const currentRotateScope = overrideValues?.rotateScope ?? toolInput?.rotateScope ?? 'all';
-    const currentCustomPages = overrideValues?.customPages ?? toolInput?.customPages ?? '';
 
     // If coming from modal, close it now so status is visible and process starts
     setToolInput(null);
 
     // Validate file types for PDF tools
-    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'DELETE_PAGES', 'PDF_TO_WORD', 'ROTATE_PDF'];
+    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'PDF_TO_WORD', 'ORGANIZE_PDF'];
     if (pdfTools.includes(action)) {
       const nonPdfFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
       if (nonPdfFiles.length > 0) {
@@ -908,7 +897,6 @@ export default function App() {
           break;
         }
 
-        case 'DELETE_PAGES':
         case 'EXTRACT_PAGES': {
           const pagesInput = currentValue || '';
           const pageIndices = parsePageInput(pagesInput);
@@ -918,81 +906,22 @@ export default function App() {
             setStatus({ message: `Đang xử lý PDF: ${file.name}...`, type: 'loading' });
             const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const newPdf = await PDFDocument.create();
-            const indices = action === 'DELETE_PAGES' 
-              ? pdf.getPageIndices().filter(i => !pageIndices.includes(i))
-              : pageIndices.filter(i => i >= 0 && i < pdf.getPageCount());
+            const indices = pageIndices.filter(i => i >= 0 && i < pdf.getPageCount());
             if (indices.length > 0) {
               const copiedPages = await newPdf.copyPages(pdf, indices);
               copiedPages.forEach(p => newPdf.addPage(p));
-              zip.file(`${file.name.replace(/\.pdf$/i, '')}_modified.pdf`, await newPdf.save());
+              zip.file(`${file.name.replace(/\.pdf$/i, '')}_extracted.pdf`, await newPdf.save());
             }
           }
           if (Object.keys(zip.files).length > 1) {
-            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'processed_pdfs.zip');
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'extracted_pdfs.zip');
           } else if (Object.keys(zip.files).length === 1) {
             const key = Object.keys(zip.files)[0];
             downloadBlob(await zip.file(key)!.async('blob'), key);
           } else {
             throw new Error('Không có trang nào được chọn hoặc kết quả trống.');
           }
-          setStatus({ message: '✅ Đã xử lý thành công!', type: 'success' });
-          break;
-        }
-
-        case 'ROTATE_PDF': {
-          const targetFiles = filesArray.length > 0 ? filesArray : processedFiles;
-          const customIndices = parsePageInput(currentCustomPages);
-          const zip = new JSZip();
-
-          for (let f = 0; f < targetFiles.length; f++) {
-            const file = targetFiles[f];
-            setStatus({ message: `Đang xoay PDF: ${f + 1}/${targetFiles.length} (${file.name})...`, type: 'loading' });
-            const arrayBuffer = await file.arrayBuffer();
-            const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const pages = pdfDoc.getPages();
-            const pageCount = pages.length;
-
-            if (currentRotateScope === 'custom' && customIndices.length === 0) {
-              throw new Error('Vui lòng nhập số trang hợp lệ cần xoay (ví dụ: 1, 3, 5-8).');
-            }
-
-            let rotatedCount = 0;
-            for (let i = 0; i < pageCount; i++) {
-              let shouldRotate = false;
-              if (currentRotateScope === 'all') {
-                shouldRotate = true;
-              } else if (currentRotateScope === 'odd') {
-                shouldRotate = (i % 2 === 0); // Trang 1, 3, 5...
-              } else if (currentRotateScope === 'even') {
-                shouldRotate = (i % 2 === 1); // Trang 2, 4, 6...
-              } else if (currentRotateScope === 'custom') {
-                shouldRotate = customIndices.includes(i);
-              }
-
-              if (shouldRotate) {
-                const page = pages[i];
-                const currentAngle = page.getRotation().angle || 0;
-                page.setRotation(degrees((currentAngle + currentRotateAngle) % 360));
-                rotatedCount++;
-              }
-            }
-
-            if (rotatedCount === 0) {
-              throw new Error('Không có trang nào phù hợp với phạm vi trang đã chọn.');
-            }
-
-            const pdfBytes = await pdfDoc.save();
-            const rotatedFileName = `${file.name.replace(/\.pdf$/i, '')}_rotated.pdf`;
-            zip.file(rotatedFileName, pdfBytes);
-          }
-
-          if (targetFiles.length > 1) {
-            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'rotated_pdfs.zip');
-          } else {
-            const key = Object.keys(zip.files)[0];
-            downloadBlob(await zip.file(key)!.async('blob'), key);
-          }
-          setStatus({ message: '✅ Đã xoay trang PDF thành công!', type: 'success' });
+          setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
           break;
         }
 
@@ -1286,6 +1215,47 @@ export default function App() {
     }
   };
 
+  const handleExecuteOrganizePdf = async (
+    file: File,
+    pages: { originalIndex: number; rotation: number }[]
+  ) => {
+    if (pages.length === 0) {
+      throw new Error('Cần giữ lại ít nhất 1 trang để lưu tệp PDF.');
+    }
+    setStatus({ message: `Đang xử lý và lưu tệp PDF (${pages.length} trang)...`, type: 'loading' });
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const srcPdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+      const outPdf = await PDFDocument.create();
+
+      const copiedPages = await outPdf.copyPages(
+        srcPdf,
+        pages.map((p) => p.originalIndex)
+      );
+
+      copiedPages.forEach((copiedPage, idx) => {
+        const addedAngle = pages[idx].rotation;
+        if (addedAngle !== 0) {
+          const existingAngle = copiedPage.getRotation().angle || 0;
+          copiedPage.setRotation(degrees((existingAngle + addedAngle) % 360));
+        }
+        outPdf.addPage(copiedPage);
+      });
+
+      const outBytes = await outPdf.save();
+      const baseName = file.name.replace(/\.pdf$/i, '');
+      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), `${baseName}_edited.pdf`);
+      setStatus({
+        message: `✅ Đã xử lý tệp PDF thành công (${pages.length} trang)!`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ message: `❌ ${err.message || 'Có lỗi xảy ra khi xử lý PDF.'}`, type: 'error' });
+      throw err;
+    }
+  };
+
   const onDrop = (e: React.DragEvent, action: ToolAction) => {
     e.preventDefault();
     setIsDragging(null);
@@ -1313,6 +1283,18 @@ export default function App() {
       setInsertPdfBaseFile(droppedPdfs[0] ?? null);
       setInsertPdfInsertFile(droppedPdfs[1] ?? null);
       setShowInsertPdfModal(true);
+      return;
+    }
+    if (action === 'ORGANIZE_PDF') {
+      const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
+        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf.', type: 'error' });
+        return;
+      }
+      if (droppedPdfs.length > 0) {
+        setOrganizePdfFile(droppedPdfs[0]);
+        setShowOrganizePdfModal(true);
+      }
       return;
     }
     if (action === 'SPLIT_PDF') {
@@ -1379,7 +1361,7 @@ export default function App() {
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Bộ công cụ thông minh cho văn phòng
           </p>
-          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">V.2.0.4 • Pro Edition</p>
+          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">V.2.0.4 • Bản cây nhà lá vườn</p>
         </motion.div>
       </header>
 
@@ -1419,6 +1401,9 @@ export default function App() {
                 } else if (tool.id === 'SPLIT_PDF') {
                   setSplitModalFile(null);
                   setShowSplitModal(true);
+                } else if (tool.id === 'ORGANIZE_PDF') {
+                  setOrganizePdfFile(null);
+                  setShowOrganizePdfModal(true);
                 } else if (tool.id === 'ROTATE_IMAGE') {
                   setRotateImageModalFiles([]);
                   setShowRotateImageModal(true);
@@ -2014,21 +1999,21 @@ export default function App() {
                 </div>
                 
                 <div>
-                  <h2 className="text-2xl font-bold text-slate-800 mb-2">Hỗ trợ khách hàng</h2>
-                  <p className="text-slate-500 leading-relaxed">
-                    Chào mừng bạn đến với <strong>Brilliant Office Tool</strong>. 
-                    Đây là bộ công cụ xử lý PDF và hình ảnh chuyên nghiệp, nhanh chóng và bảo mật.
+                  <h2 className="text-2xl font-bold text-slate-800 mb-2">Góc thông tin nho nhỏ</h2>
+                  <p className="text-slate-500 leading-relaxed text-sm">
+                    Chào bạn đã ghé chơi với <strong>Brilliant Office Tool</strong>!
+                    Bộ đồ nghề nho nhỏ này ra đời chỉ để giúp anh em văn phòng đỡ phải mở 7749 trang web cắt ghép PDF, xoay ảnh — xài vừa đủ dùng, giản dị và chạy thẳng trên trình duyệt cho nhẹ máy.
                   </p>
                 </div>
 
                 <div className="w-full space-y-3">
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
-                    <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Tác giả</div>
-                    <div className="text-slate-700 font-bold">Brillian Pham</div>
+                    <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Người gõ phím</div>
+                    <div className="text-slate-700 font-bold">Brillian Pham <span className="font-normal text-slate-500 text-sm">• Dân văn phòng thích vọc</span></div>
                   </div>
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Phiên bản</div>
-                    <div className="text-slate-700 font-bold">V.2.0.4 - Pro Edition</div>
+                    <div className="text-slate-700 font-bold">V.2.0.4 - Bản cây nhà lá vườn</div>
                   </div>
                   <a 
                     href="https://fb.com/minhtri.pham.1997" 
@@ -2040,7 +2025,7 @@ export default function App() {
                       <Facebook className="w-6 h-6" />
                     </div>
                     <div>
-                      <div className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-0.5">Facebook</div>
+                      <div className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-0.5">Facebook (Báo lỗi / Tám chuyện)</div>
                       <div className="text-blue-700 font-bold">minhtri.pham.1997</div>
                     </div>
                   </a>
@@ -2048,9 +2033,9 @@ export default function App() {
 
                 <button 
                   onClick={() => setShowSupport(false)}
-                  className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 transition-colors"
+                  className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 transition-colors cursor-pointer"
                 >
-                  Đã hiểu
+                  Okila, làm việc tiếp thôi!
                 </button>
               </div>
             </motion.div>
@@ -2098,6 +2083,20 @@ export default function App() {
               setInsertPdfInsertFile(null);
             }}
             onExecuteInsert={handleExecuteInsertPdf}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Interactive Organize PDF Modal (Reorder, Rotate, Delete) */}
+      <AnimatePresence>
+        {showOrganizePdfModal && (
+          <PdfOrganizeModal
+            initialFile={organizePdfFile}
+            onClose={() => {
+              setShowOrganizePdfModal(false);
+              setOrganizePdfFile(null);
+            }}
+            onExecuteOrganize={handleExecuteOrganizePdf}
           />
         )}
       </AnimatePresence>
