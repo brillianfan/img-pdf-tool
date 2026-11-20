@@ -14,39 +14,56 @@ import {
   Loader2,
   GripVertical,
   Check,
-  RefreshCw
+  RefreshCw,
+  FilePlus2,
+  FileOutput
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import * as pdfjsLib from 'pdfjs-dist';
 
 export interface OrganizedPdfPage {
   id: string;
-  originalIndex: number; // 0-based page index in source PDF
-  originalPageNum: number; // 1-based display number
+  sourceFileId: string;
+  sourceFileName: string;
+  originalIndex: number; // 0-based page index in its source PDF
+  originalPageNum: number; // 1-based page number in its source PDF
   rotation: number; // Cumulative degrees for smooth CSS preview; normalized mod 360 on export
   deleted: boolean;
   selected: boolean;
+  isInserted?: boolean;
+}
+
+export interface OrganizePdfExecuteItem {
+  sourceFileId: string;
+  originalIndex: number;
+  rotation: number;
 }
 
 interface PdfOrganizeModalProps {
   initialFile?: File | null;
+  initialExtraFiles?: File[];
   onClose: () => void;
-  onExecuteOrganize: (
-    file: File,
-    pages: { originalIndex: number; rotation: number }[]
-  ) => Promise<void>;
+  onExecuteOrganize: (params: {
+    sourceFiles: Record<string, File>;
+    primaryFileName: string;
+    pages: OrganizePdfExecuteItem[];
+    mode: 'save' | 'extract';
+  }) => Promise<void>;
 }
 
-const MAX_THUMBNAILS = 60;
+const MAX_THUMBNAILS_PER_FILE = 60;
 
 export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
   initialFile = null,
+  initialExtraFiles = [],
   onClose,
   onExecuteOrganize,
 }) => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(initialFile);
+  const [primaryFileId, setPrimaryFileId] = useState<string | null>(null);
+  const [sourceFiles, setSourceFiles] = useState<Record<string, File>>({});
   const [pages, setPages] = useState<OrganizedPdfPage[]>([]);
-  const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
+  // Keyed by `${sourceFileId}:${originalPageNum}`
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [loadingDoc, setLoadingDoc] = useState(false);
   const [isDragOverFile, setIsDragOverFile] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -56,11 +73,22 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
-  // Quick custom page order / range input
-  const [customOrderInput, setCustomOrderInput] = useState('');
+  // Quick custom page range/order input (supports both Select/Extract and Reorder)
+  const [customRangeInput, setCustomRangeInput] = useState('');
   const [showDeleted, setShowDeleted] = useState(true);
 
+  // Inline "Insert PDF" sub-panel state
+  const [showInsertPanel, setShowInsertPanel] = useState(false);
+  const [insertCandidateFile, setInsertCandidateFile] = useState<File | null>(null);
+  const [insertCandidatePageCount, setInsertCandidatePageCount] = useState<number>(0);
+  const [loadingInsertCandidate, setLoadingInsertCandidate] = useState(false);
+  const [insertRangeMode, setInsertRangeMode] = useState<'all' | 'custom'>('all');
+  const [insertCustomRange, setInsertCustomRange] = useState('');
+  const [insertAfterSeq, setInsertAfterSeq] = useState<number>(0);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const insertFileInputRef = useRef<HTMLInputElement>(null);
+  const activeSessionRef = useRef(0);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -72,86 +100,98 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
 
   const normalizeAngle = (angle: number) => ((angle % 360) + 360) % 360;
 
-  // Load PDF & render progressive thumbnails
-  useEffect(() => {
-    if (!selectedFile) {
-      setPages([]);
-      setThumbnails({});
-      setCustomOrderInput('');
-      return;
+  const renderThumbnailsForSource = async (
+    fileId: string,
+    pdf: any,
+    pageNumsToRender: number[],
+    sessionId: number
+  ) => {
+    const limited = pageNumsToRender.slice(0, MAX_THUMBNAILS_PER_FILE);
+    for (const pageNum of limited) {
+      if (activeSessionRef.current !== sessionId) break;
+      try {
+        const page = await pdf.getPage(pageNum);
+        const initVp = page.getViewport({ scale: 1 });
+        const scale = 150 / initVp.width;
+        const vp = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width;
+        canvas.height = vp.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          await page.render({ canvasContext: ctx, viewport: vp } as any).promise;
+          if (activeSessionRef.current !== sessionId) break;
+          const key = `${fileId}:${pageNum}`;
+          setThumbnails((prev) => ({ ...prev, [key]: canvas.toDataURL('image/jpeg', 0.8) }));
+        }
+      } catch (err) {
+        console.error(`Thumbnail error on ${fileId} page ${pageNum}`, err);
+      }
     }
+  };
 
-    let cancelled = false;
+  const loadPrimaryFile = async (file: File) => {
+    const sessionId = ++activeSessionRef.current;
+    const newId = `src-main-${Date.now()}`;
+
     setLoadingDoc(true);
+    setPrimaryFileId(newId);
+    setSourceFiles({ [newId]: file });
     setPages([]);
     setThumbnails({});
     setErrorMsg(null);
-    setCustomOrderInput('');
+    setCustomRangeInput('');
+    setShowInsertPanel(false);
+    setInsertCandidateFile(null);
 
-    const loadPdf = async () => {
-      try {
-        const buffer = await selectedFile.arrayBuffer();
-        if (cancelled) return;
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-        if (cancelled) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      if (activeSessionRef.current !== sessionId) return;
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+      if (activeSessionRef.current !== sessionId) return;
 
-        const count = pdf.numPages;
-        const initPages: OrganizedPdfPage[] = Array.from({ length: count }, (_, idx) => ({
-          id: `page-${idx + 1}`,
-          originalIndex: idx,
-          originalPageNum: idx + 1,
-          rotation: 0,
-          deleted: false,
-          selected: false,
-        }));
-        setPages(initPages);
+      const count = pdf.numPages;
+      const initPages: OrganizedPdfPage[] = Array.from({ length: count }, (_, idx) => ({
+        id: `${newId}-p-${idx + 1}`,
+        sourceFileId: newId,
+        sourceFileName: file.name,
+        originalIndex: idx,
+        originalPageNum: idx + 1,
+        rotation: 0,
+        deleted: false,
+        selected: false,
+        isInserted: false,
+      }));
+      setPages(initPages);
+      setInsertAfterSeq(count);
+      setLoadingDoc(false);
+
+      const allNums = Array.from({ length: count }, (_, idx) => idx + 1);
+      await renderThumbnailsForSource(newId, pdf, allNums, sessionId);
+    } catch (err) {
+      console.error('Failed loading PDF for organize', err);
+      if (activeSessionRef.current === sessionId) {
         setLoadingDoc(false);
-
-        const renderLimit = Math.min(count, MAX_THUMBNAILS);
-        for (let i = 1; i <= renderLimit; i++) {
-          if (cancelled) break;
-          try {
-            const page = await pdf.getPage(i);
-            const initVp = page.getViewport({ scale: 1 });
-            const scale = 150 / initVp.width;
-            const vp = page.getViewport({ scale });
-            const canvas = document.createElement('canvas');
-            canvas.width = vp.width;
-            canvas.height = vp.height;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              await page.render({ canvasContext: ctx, viewport: vp } as any).promise;
-              if (cancelled) break;
-              setThumbnails((prev) => ({ ...prev, [i]: canvas.toDataURL('image/jpeg', 0.8) }));
-            }
-          } catch (err) {
-            console.error(`Thumbnail error on page ${i}`, err);
-          }
-        }
-      } catch (err) {
-        console.error('Failed loading PDF for organize', err);
-        if (!cancelled) {
-          setLoadingDoc(false);
-          setErrorMsg(`Không thể đọc tệp PDF: ${selectedFile.name}`);
-        }
+        setErrorMsg(`Không thể đọc tệp PDF: ${file.name}`);
       }
-    };
-
-    loadPdf();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedFile]);
-
-  const handleFileDropOrPick = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const pdf = Array.from(files).find((f) => f.name.toLowerCase().endsWith('.pdf'));
-    if (!pdf) {
-      setErrorMsg('Vui lòng chỉ chọn tệp định dạng .pdf.');
-      return;
     }
-    setSelectedFile(pdf);
   };
+
+  useEffect(() => {
+    if (initialFile) {
+      loadPrimaryFile(initialFile).then(() => {
+        if (initialExtraFiles && initialExtraFiles.length > 0) {
+          prepareInsertCandidate(initialExtraFiles[0]);
+        }
+      });
+    }
+    return () => {
+      activeSessionRef.current++;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const primaryFile = primaryFileId ? sourceFiles[primaryFileId] || null : null;
 
   const activePages = useMemo(() => pages.filter((p) => !p.deleted), [pages]);
   const deletedCount = pages.length - activePages.length;
@@ -159,6 +199,148 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
     () => pages.filter((p) => !p.deleted && p.selected).length,
     [pages]
   );
+
+  const prepareInsertCandidate = async (file: File) => {
+    setErrorMsg(null);
+    setLoadingInsertCandidate(true);
+    setInsertCandidateFile(file);
+    setInsertRangeMode('all');
+    setInsertCustomRange('');
+    setShowInsertPanel(true);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+      setInsertCandidatePageCount(pdf.numPages);
+      setInsertAfterSeq(activePages.length);
+    } catch {
+      setErrorMsg(`Không thể đọc tệp PDF cần chèn: ${file.name}`);
+      setInsertCandidateFile(null);
+      setInsertCandidatePageCount(0);
+    } finally {
+      setLoadingInsertCandidate(false);
+    }
+  };
+
+  const handleFileDropOrPick = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const pdfs = Array.from(files).filter((f) => f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfs.length === 0) {
+      setErrorMsg('Vui lòng chỉ chọn tệp định dạng .pdf.');
+      return;
+    }
+    loadPrimaryFile(pdfs[0]).then(() => {
+      if (pdfs.length > 1) {
+        prepareInsertCandidate(pdfs[1]);
+      }
+    });
+  };
+
+  const handlePickInsertFile = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const pdf = Array.from(files).find((f) => f.name.toLowerCase().endsWith('.pdf'));
+    if (!pdf) {
+      setErrorMsg('Vui lòng chỉ chọn tệp định dạng .pdf để chèn.');
+      return;
+    }
+    prepareInsertCandidate(pdf);
+  };
+
+  const parseRangeToOneBased = (input: string, maxPages: number): number[] => {
+    const picked: number[] = [];
+    const parts = input.split(',');
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      if (trimmed.includes('-')) {
+        const [s, e] = trimmed.split('-').map((n) => parseInt(n.trim(), 10));
+        if (!isNaN(s) && !isNaN(e)) {
+          const step = s <= e ? 1 : -1;
+          for (let n = s; step > 0 ? n <= e : n >= e; n += step) {
+            if (n >= 1 && n <= maxPages) picked.push(n);
+          }
+        }
+      } else {
+        const n = parseInt(trimmed, 10);
+        if (!isNaN(n) && n >= 1 && n <= maxPages) picked.push(n);
+      }
+    }
+    return picked;
+  };
+
+  const insertCandidateEffectivePages = useMemo(() => {
+    if (!insertCandidateFile || insertCandidatePageCount === 0) return [];
+    if (insertRangeMode === 'all') {
+      return Array.from({ length: insertCandidatePageCount }, (_, i) => i + 1);
+    }
+    return Array.from(
+      new Set(parseRangeToOneBased(insertCustomRange, insertCandidatePageCount))
+    );
+  }, [insertCandidateFile, insertCandidatePageCount, insertRangeMode, insertCustomRange]);
+
+  const handleConfirmInsertPages = async () => {
+    if (!insertCandidateFile || insertCandidateEffectivePages.length === 0) {
+      setErrorMsg('Không có trang hợp lệ nào được chọn để chèn.');
+      return;
+    }
+
+    const sessionId = activeSessionRef.current;
+    const newSourceId = `src-ins-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const fileToLoad = insertCandidateFile;
+    const numsToInsert = [...insertCandidateEffectivePages];
+
+    setSourceFiles((prev) => ({ ...prev, [newSourceId]: fileToLoad }));
+
+    const newPageItems: OrganizedPdfPage[] = numsToInsert.map((pageNum, idx) => ({
+      id: `${newSourceId}-p-${pageNum}-${idx}-${Date.now()}`,
+      sourceFileId: newSourceId,
+      sourceFileName: fileToLoad.name,
+      originalIndex: pageNum - 1,
+      originalPageNum: pageNum,
+      rotation: 0,
+      deleted: false,
+      selected: false,
+      isInserted: true,
+    }));
+
+    // Insert after the N-th active page (0 = very beginning)
+    setPages((prev) => {
+      const clampedAfter = Math.max(0, Math.min(insertAfterSeq, activePages.length));
+      if (clampedAfter === 0) {
+        return [...newPageItems, ...prev];
+      }
+      let activeSeen = 0;
+      let insertArrayIdx = prev.length;
+      for (let i = 0; i < prev.length; i++) {
+        if (!prev[i].deleted) {
+          activeSeen++;
+          if (activeSeen === clampedAfter) {
+            insertArrayIdx = i + 1;
+            break;
+          }
+        }
+      }
+      return [
+        ...prev.slice(0, insertArrayIdx),
+        ...newPageItems,
+        ...prev.slice(insertArrayIdx),
+      ];
+    });
+
+    setShowInsertPanel(false);
+    setInsertCandidateFile(null);
+    setInsertCandidatePageCount(0);
+    setInsertCustomRange('');
+
+    try {
+      const buffer = await fileToLoad.arrayBuffer();
+      if (activeSessionRef.current !== sessionId) return;
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+      await renderThumbnailsForSource(newSourceId, pdf, numsToInsert, sessionId);
+    } catch (err) {
+      console.error('Error rendering thumbnails for inserted PDF', err);
+    }
+  };
 
   // Batch rotation: applies to selected active pages if any are selected, else all active pages
   const rotateTargetPages = (delta: number) => {
@@ -240,60 +422,60 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
   };
 
   const resetAllChanges = () => {
-    setErrorMsg(null);
-    setCustomOrderInput('');
-    setPages((prev) =>
-      [...prev]
-        .sort((a, b) => a.originalIndex - b.originalIndex)
-        .map((p) => ({ ...p, rotation: 0, deleted: false, selected: false }))
-    );
+    if (!primaryFileId || !sourceFiles[primaryFileId]) return;
+    loadPrimaryFile(sourceFiles[primaryFileId]);
   };
 
-  // Apply custom page order like "3, 1, 2, 5-4"
-  const applyCustomOrder = () => {
-    const raw = customOrderInput.trim();
-    if (!raw || pages.length === 0) return;
+  // Select active pages matching the custom range (based on current active sequence #1..N)
+  const selectByCustomRange = () => {
+    const raw = customRangeInput.trim();
+    if (!raw || activePages.length === 0) return;
     setErrorMsg(null);
-
-    const total = pages.length;
-    const pickedNums: number[] = [];
-    const parts = raw.split(',');
-
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      if (trimmed.includes('-')) {
-        const [s, e] = trimmed.split('-').map((n) => parseInt(n.trim(), 10));
-        if (!isNaN(s) && !isNaN(e)) {
-          const step = s <= e ? 1 : -1;
-          for (let n = s; step > 0 ? n <= e : n >= e; n += step) {
-            if (n >= 1 && n <= total) pickedNums.push(n);
-          }
-        }
-      } else {
-        const n = parseInt(trimmed, 10);
-        if (!isNaN(n) && n >= 1 && n <= total) pickedNums.push(n);
-      }
-    }
-
-    const uniqueOrdered = Array.from(new Set(pickedNums));
-    if (uniqueOrdered.length === 0) {
-      setErrorMsg(`Vui lòng nhập thứ tự trang hợp lệ từ 1 đến ${total} (ví dụ: 3, 1, 2, 4-${total}).`);
+    const totalActive = activePages.length;
+    const pickedSeqs = new Set(parseRangeToOneBased(raw, totalActive));
+    if (pickedSeqs.size === 0) {
+      setErrorMsg(`Vui lòng nhập số trang hợp lệ từ 1 đến ${totalActive} (ví dụ: 1, 3-5).`);
       return;
     }
 
-    const byOrigNum = new Map<number, OrganizedPdfPage>();
-    pages.forEach((p) => byOrigNum.set(p.originalPageNum, p));
+    let seq = 0;
+    setPages((prev) =>
+      prev.map((p) => {
+        if (p.deleted) return { ...p, selected: false };
+        seq++;
+        return { ...p, selected: pickedSeqs.has(seq) };
+      })
+    );
+  };
 
-    const keptSet = new Set(uniqueOrdered);
-    const reorderedActive: OrganizedPdfPage[] = uniqueOrdered
-      .map((num) => byOrigNum.get(num)!)
-      .filter(Boolean)
-      .map((p) => ({ ...p, deleted: false }));
+  // Reorder/filter active pages by custom order like "3, 1, 2, 4-6" (uses current active #1..N)
+  const applyCustomOrder = () => {
+    const raw = customRangeInput.trim();
+    if (!raw || activePages.length === 0) return;
+    setErrorMsg(null);
+
+    const totalActive = activePages.length;
+    const uniqueOrdered = Array.from(new Set(parseRangeToOneBased(raw, totalActive)));
+    if (uniqueOrdered.length === 0) {
+      setErrorMsg(`Vui lòng nhập thứ tự trang hợp lệ từ 1 đến ${totalActive} (ví dụ: 3, 1, 2, 4-${totalActive}).`);
+      return;
+    }
+
+    const byActiveSeq = new Map<number, OrganizedPdfPage>();
+    activePages.forEach((p, idx) => byActiveSeq.set(idx + 1, p));
+
+    const keptIds = new Set<string>();
+    const reorderedActive: OrganizedPdfPage[] = [];
+    uniqueOrdered.forEach((seqNum) => {
+      const item = byActiveSeq.get(seqNum);
+      if (item) {
+        keptIds.add(item.id);
+        reorderedActive.push({ ...item, deleted: false });
+      }
+    });
 
     const omittedAsDeleted: OrganizedPdfPage[] = pages
-      .filter((p) => !keptSet.has(p.originalPageNum))
-      .sort((a, b) => a.originalIndex - b.originalIndex)
+      .filter((p) => !keptIds.has(p.id))
       .map((p) => ({ ...p, deleted: true, selected: false }));
 
     setPages([...reorderedActive, ...omittedAsDeleted]);
@@ -353,26 +535,47 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
 
   const hasAnyChanges = useMemo(() => {
     if (deletedCount > 0) return true;
+    if (pages.some((p) => p.isInserted)) return true;
     return pages.some(
       (p, idx) => p.originalIndex !== idx || normalizeAngle(p.rotation) !== 0
     );
   }, [pages, deletedCount]);
 
-  const handleSubmit = async () => {
-    if (!selectedFile || activePages.length === 0 || isProcessing) return;
+  const handleExport = async (mode: 'save' | 'extract') => {
+    if (!primaryFile || isProcessing) return;
+
+    const targetList =
+      mode === 'extract'
+        ? activePages.filter((p) => p.selected)
+        : activePages;
+
+    if (targetList.length === 0) {
+      setErrorMsg(
+        mode === 'extract'
+          ? 'Vui lòng chọn ít nhất 1 trang để trích xuất.'
+          : 'Cần giữ lại ít nhất 1 trang để lưu tệp PDF.'
+      );
+      return;
+    }
+
     setIsProcessing(true);
     setErrorMsg(null);
     try {
-      await onExecuteOrganize(
-        selectedFile,
-        activePages.map((p) => ({
+      await onExecuteOrganize({
+        sourceFiles,
+        primaryFileName: primaryFile.name,
+        pages: targetList.map((p) => ({
+          sourceFileId: p.sourceFileId,
           originalIndex: p.originalIndex,
           rotation: normalizeAngle(p.rotation),
-        }))
-      );
-      onClose();
+        })),
+        mode,
+      });
+      if (mode === 'save') {
+        onClose();
+      }
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Có lỗi xảy ra khi lưu tệp PDF.');
+      setErrorMsg(err?.message || 'Có lỗi xảy ra khi xử lý tệp PDF.');
     } finally {
       setIsProcessing(false);
     }
@@ -404,6 +607,16 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
             e.target.value = '';
           }}
         />
+        <input
+          ref={insertFileInputRef}
+          type="file"
+          accept=".pdf"
+          className="hidden"
+          onChange={(e) => {
+            handlePickInsertFile(e.target.files);
+            e.target.value = '';
+          }}
+        />
 
         {/* Header */}
         <div className="flex items-start justify-between pb-3.5 border-b border-slate-100 flex-shrink-0">
@@ -413,10 +626,10 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-bold text-slate-800">
-                Sắp xếp, Xoay & Xóa trang PDF
+                Sắp xếp, Xoay, Xóa, Trích xuất & Chèn trang PDF
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Kéo thả để sắp xếp lại thứ tự trang, xoay góc 90°/180°/270° hoặc xóa các trang không mong muốn trong một lần xử lý
+                Tất cả thao tác trên trang PDF tại một nơi: kéo thả sắp xếp, xoay, xóa, trích xuất trang chọn lọc hoặc chèn thêm trang từ PDF khác
               </p>
             </div>
           </div>
@@ -432,7 +645,7 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
 
         {/* Body */}
         <div className="flex-1 min-h-0 overflow-y-auto py-4 pr-1 space-y-4 custom-scrollbar">
-          {!selectedFile ? (
+          {!primaryFile ? (
             <div
               onDragOver={(e) => {
                 e.preventDefault();
@@ -465,7 +678,7 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                   Bấm để tải tệp PDF lên hoặc kéo thả vào đây
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
-                  Tất cả trang PDF sẽ hiển thị trực quan để bạn sắp xếp, xoay hoặc xóa tùy ý
+                  Hiển thị trực quan từng trang để bạn sắp xếp, xoay, xóa, trích xuất hoặc chèn thêm PDF khác
                 </p>
               </div>
               <span className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-semibold shadow-sm hover:bg-blue-700 transition-colors mt-1">
@@ -481,20 +694,34 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                     <FileText className="w-5 h-5" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-bold text-slate-800 truncate max-w-[240px] sm:max-w-md" title={selectedFile.name}>
-                      {selectedFile.name}
+                    <p className="text-xs font-bold text-slate-800 truncate max-w-[240px] sm:max-w-md" title={primaryFile.name}>
+                      {primaryFile.name}
                     </p>
                     <p className="text-[11px] text-slate-500">
-                      {formatBytes(selectedFile.size)} • Gốc: <strong>{pages.length}</strong> trang • Còn lại:{' '}
+                      {formatBytes(primaryFile.size)} • Hiện có:{' '}
                       <strong className="text-blue-700">{activePages.length}</strong> trang
                       {deletedCount > 0 && (
                         <span className="text-rose-600 ml-1">({deletedCount} trang đã xóa)</span>
+                      )}
+                      {selectedActiveCount > 0 && (
+                        <span className="text-teal-700 font-semibold ml-1.5">
+                          • Đang chọn {selectedActiveCount} trang
+                        </span>
                       )}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => insertFileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    <FilePlus2 className="w-3.5 h-3.5" />
+                    <span>Chèn PDF khác</span>
+                  </button>
                   <button
                     type="button"
                     disabled={isProcessing}
@@ -511,15 +738,162 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Đổi tệp PDF</span>
+                    <span>Đổi tệp gốc</span>
                   </button>
                 </div>
               </div>
 
+              {/* Inline Insert PDF Sub-Panel */}
+              {showInsertPanel && insertCandidateFile && (
+                <div className="bg-teal-50/70 border border-teal-200 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-teal-600 text-white flex items-center justify-center flex-shrink-0">
+                        <FilePlus2 className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-teal-900 truncate">
+                          Chèn từ tệp: {insertCandidateFile.name}
+                        </p>
+                        <p className="text-[11px] text-teal-700">
+                          {loadingInsertCandidate
+                            ? 'Đang đọc số trang...'
+                            : `${insertCandidatePageCount} trang • ${formatBytes(insertCandidateFile.size)}`}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowInsertPanel(false);
+                        setInsertCandidateFile(null);
+                      }}
+                      className="p-1 text-teal-600 hover:bg-teal-100 rounded-lg cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {!loadingInsertCandidate && insertCandidatePageCount > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                      {/* Pages to take from inserted PDF */}
+                      <div className="bg-white rounded-xl border border-teal-100 p-3 space-y-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                          Trang muốn lấy để chèn
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setInsertRangeMode('all')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer border ${
+                              insertRangeMode === 'all'
+                                ? 'bg-teal-600 text-white border-teal-600'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            Tất cả ({insertCandidatePageCount} trang)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setInsertRangeMode('custom')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer border ${
+                              insertRangeMode === 'custom'
+                                ? 'bg-teal-600 text-white border-teal-600'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            Tùy chọn trang
+                          </button>
+                        </div>
+                        {insertRangeMode === 'custom' && (
+                          <input
+                            type="text"
+                            value={insertCustomRange}
+                            onChange={(e) => setInsertCustomRange(e.target.value)}
+                            placeholder={`Ví dụ: 1, 2-${Math.min(3, insertCandidatePageCount)}`}
+                            className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-teal-500 outline-none"
+                          />
+                        )}
+                      </div>
+
+                      {/* Insertion Position */}
+                      <div className="bg-white rounded-xl border border-teal-100 p-3 space-y-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                          Vị trí chèn trong danh sách hiện tại
+                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setInsertAfterSeq(0)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer border ${
+                              insertAfterSeq === 0
+                                ? 'bg-teal-600 text-white border-teal-600'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            Đầu tệp
+                          </button>
+                          <div className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                            <span className="text-xs text-slate-600 font-semibold">Sau trang #</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={activePages.length}
+                              value={insertAfterSeq}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                if (!isNaN(v)) {
+                                  setInsertAfterSeq(Math.max(0, Math.min(v, activePages.length)));
+                                } else if (e.target.value === '') {
+                                  setInsertAfterSeq(0);
+                                }
+                              }}
+                              className="w-12 text-center text-xs font-bold text-teal-700 bg-white border border-teal-200 rounded py-0.5 outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setInsertAfterSeq(activePages.length)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer border ${
+                              insertAfterSeq === activePages.length
+                                ? 'bg-teal-600 text-white border-teal-600'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            Cuối tệp (#{activePages.length})
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-teal-800 font-medium">
+                      Sẽ chèn <strong>{insertCandidateEffectivePages.length}</strong> trang vào vị trí{' '}
+                      <strong>
+                        {insertAfterSeq === 0
+                          ? 'đầu tệp'
+                          : insertAfterSeq >= activePages.length
+                            ? `cuối tệp (sau trang #${activePages.length})`
+                            : `sau trang #${insertAfterSeq}`}
+                      </strong>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={loadingInsertCandidate || insertCandidateEffectivePages.length === 0}
+                      onClick={handleConfirmInsertPages}
+                      className="px-4 py-2 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer disabled:cursor-not-allowed transition-colors"
+                    >
+                      Chèn vào danh sách
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Combined Controls Toolbar */}
               {!loadingDoc && pages.length > 0 && (
                 <div className="bg-slate-50/90 border border-slate-200/80 rounded-2xl p-3.5 space-y-3">
-                  {/* Row 1: Selection + Rotate + Delete */}
+                  {/* Row 1: Selection + Rotate + Delete + Extract */}
                   <div className="flex flex-wrap items-center justify-between gap-2.5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mr-1">
@@ -559,7 +933,7 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
 
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mr-1">
-                        {selectedActiveCount > 0 ? `Xoay ${selectedActiveCount} trang:` : 'Xoay tất cả:'}
+                        {selectedActiveCount > 0 ? `Tác vụ (${selectedActiveCount} trang):` : 'Xoay tất cả:'}
                       </span>
                       <button
                         type="button"
@@ -587,19 +961,31 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                       </button>
 
                       {selectedActiveCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={deleteSelectedPages}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer ml-1"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Xóa ({selectedActiveCount})</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            disabled={isProcessing}
+                            onClick={() => handleExport('extract')}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold cursor-pointer ml-1"
+                            title="Xuất riêng các trang đang chọn thành một tệp PDF mới"
+                          >
+                            <FileOutput className="w-3.5 h-3.5" />
+                            <span>Trích xuất ({selectedActiveCount})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={deleteSelectedPages}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Xóa ({selectedActiveCount})</span>
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
 
-                  {/* Row 2: Reorder controls & custom order */}
+                  {/* Row 2: Reorder controls & custom range (Select or Reorder) */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2.5 border-t border-slate-200/70">
                     <div className="flex flex-wrap items-center gap-2">
                       <button
@@ -632,21 +1018,30 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-1.5 flex-1 sm:max-w-sm">
+                    <div className="flex items-center gap-1.5 flex-1 sm:max-w-md">
                       <input
                         type="text"
-                        value={customOrderInput}
-                        onChange={(e) => setCustomOrderInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && applyCustomOrder()}
-                        placeholder={`Thứ tự tùy chỉnh (vd: ${pages.length > 2 ? `3, 1, 2, 4-${pages.length}` : '2, 1'})`}
+                        value={customRangeInput}
+                        onChange={(e) => setCustomRangeInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && selectByCustomRange()}
+                        placeholder={`Nhập số trang (vd: ${activePages.length > 2 ? `1, 3-${activePages.length}` : '1, 2'})`}
                         className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
                       />
                       <button
                         type="button"
+                        onClick={selectByCustomRange}
+                        title="Đánh dấu chọn các trang vừa nhập để Trích xuất / Xoay / Xóa"
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer"
+                      >
+                        Chọn
+                      </button>
+                      <button
+                        type="button"
                         onClick={applyCustomOrder}
+                        title="Sắp xếp lại danh sách trang theo đúng thứ tự vừa nhập (trang ngoài dãy sẽ đánh dấu xóa)"
                         className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer"
                       >
-                        Áp dụng
+                        Sắp xếp
                       </button>
                     </div>
                   </div>
@@ -666,7 +1061,8 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                     const actualIdx = pages.findIndex((p) => p.id === page.id);
                     const normRot = normalizeAngle(page.rotation);
                     const activeSeq = activeSequenceMap.get(page.id);
-                    const thumb = thumbnails[page.originalPageNum];
+                    const thumbKey = `${page.sourceFileId}:${page.originalPageNum}`;
+                    const thumb = thumbnails[thumbKey];
                     const isDropTarget = dragOverId === page.id;
                     const isBeingDragged = draggedId === page.id;
 
@@ -685,7 +1081,9 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                               ? 'bg-blue-50/60 border-blue-500 ring-2 ring-blue-200 shadow-sm'
                               : isDropTarget
                                 ? 'bg-blue-50/40 border-blue-500 border-dashed scale-[1.02]'
-                                : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-sm'
+                                : page.isInserted
+                                  ? 'bg-teal-50/20 border-teal-200 hover:border-teal-400 hover:shadow-sm'
+                                  : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-sm'
                         } ${isBeingDragged ? 'opacity-40 scale-95' : ''}`}
                       >
                         {/* Top Card Row: Drag Handle + Order/Selection + Delete */}
@@ -702,7 +1100,7 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => toggleSelectPage(page.id)}
-                                title="Chọn trang này để thao tác hàng loạt"
+                                title="Chọn trang này để Trích xuất / Xoay / Xóa hàng loạt"
                                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
                                   page.selected
                                     ? 'bg-blue-600 text-white'
@@ -715,6 +1113,12 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                             ) : (
                               <span className="px-1.5 py-0.5 rounded-md text-[11px] font-bold bg-rose-100 text-rose-700">
                                 Đã xóa
+                              </span>
+                            )}
+
+                            {page.isInserted && !page.deleted && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-100 text-teal-700">
+                                Mới chèn
                               </span>
                             )}
                           </div>
@@ -763,9 +1167,14 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                             </div>
                           )}
 
-                          {/* Original Page Badge */}
-                          <span className="absolute bottom-1.5 left-1.5 bg-slate-800/75 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded">
-                            Gốc: {page.originalPageNum}
+                          {/* Source/Original Page Badge */}
+                          <span
+                            className={`absolute bottom-1.5 left-1.5 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded max-w-[90%] truncate ${
+                              page.isInserted ? 'bg-teal-700/85' : 'bg-slate-800/75'
+                            }`}
+                            title={`${page.sourceFileName} - Trang ${page.originalPageNum}`}
+                          >
+                            {page.isInserted ? `Chèn: tr.${page.originalPageNum}` : `Gốc: ${page.originalPageNum}`}
                           </span>
 
                           {/* Rotation Badge */}
@@ -845,21 +1254,34 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
         </div>
 
         {/* Sticky Footer */}
-        <div className="flex gap-3 pt-3.5 border-t border-slate-100 flex-shrink-0 bg-white mt-1">
+        <div className="flex flex-wrap gap-3 pt-3.5 border-t border-slate-100 flex-shrink-0 bg-white mt-1">
           <button
             type="button"
             disabled={isProcessing}
             onClick={onClose}
-            className="flex-1 px-6 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
+            className="px-6 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
             Hủy
           </button>
+
+          {selectedActiveCount > 0 && (
+            <button
+              type="button"
+              disabled={loadingDoc || isProcessing}
+              onClick={() => handleExport('extract')}
+              className="px-5 py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-200 cursor-pointer disabled:opacity-50"
+            >
+              <FileOutput className="w-4 h-4" />
+              <span>Trích xuất ({selectedActiveCount} trang đã chọn)</span>
+            </button>
+          )}
+
           <button
             type="button"
-            disabled={!selectedFile || activePages.length === 0 || loadingDoc || isProcessing}
-            onClick={handleSubmit}
+            disabled={!primaryFile || activePages.length === 0 || loadingDoc || isProcessing}
+            onClick={() => handleExport('save')}
             className={`flex-1 px-6 py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${
-              !selectedFile || activePages.length === 0 || loadingDoc || isProcessing
+              !primaryFile || activePages.length === 0 || loadingDoc || isProcessing
                 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
                 : 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-200 cursor-pointer'
             }`}
@@ -869,7 +1291,7 @@ export const PdfOrganizeModal: React.FC<PdfOrganizeModalProps> = ({
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Đang xuất tệp PDF...</span>
               </>
-            ) : !selectedFile ? (
+            ) : !primaryFile ? (
               <span>Chưa chọn tệp PDF</span>
             ) : activePages.length === 0 ? (
               <span>Cần giữ lại ít nhất 1 trang</span>

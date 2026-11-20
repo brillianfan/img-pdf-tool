@@ -29,7 +29,6 @@ import {
   ArrowDown,
   GripVertical,
   Facebook,
-  FilePlus2,
   Layers
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
@@ -41,8 +40,7 @@ import { changeDpi } from './lib/dpiUtils';
 import { convertDocxToPdf, convertDocToPdf } from './lib/docxToPdf';
 import { PdfSplitModal } from './components/PdfSplitModal';
 import { ImageRotateModal } from './components/ImageRotateModal';
-import { PdfInsertModal } from './components/PdfInsertModal';
-import { PdfOrganizeModal } from './components/PdfOrganizeModal';
+import { PdfOrganizeModal, OrganizePdfExecuteItem } from './components/PdfOrganizeModal';
 import { rotateImagePreserveOriginal } from './lib/imageRotate';
 // Removed AIOCRTool as per user request to use Iframe instead
 
@@ -52,11 +50,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLi
 type ToolAction = 
   | 'IMG_TO_PDF' 
   | 'PDF_TO_IMG' 
-  | 'EXTRACT_PAGES' 
   | 'COMPRESS_PDF' 
   | 'CONVERT_IMAGE' 
   | 'MERGE_PDF' 
-  | 'INSERT_PDF'
   | 'SPLIT_PDF' 
   | 'ORGANIZE_PDF'
   | 'ROTATE_IMAGE'
@@ -95,14 +91,6 @@ const TOOLS: Tool[] = [
     multiple: true
   },
   { 
-    id: 'EXTRACT_PAGES', 
-    title: 'Trích xuất trang PDF', 
-    icon: <FileText className="w-10 h-10 text-slate-700" />, 
-    description: 'Lấy các trang cụ thể từ tệp PDF của bạn',
-    accept: '.pdf',
-    multiple: true
-  },
-  { 
     id: 'COMPRESS_PDF', 
     title: 'Nén tệp PDF', 
     icon: <Package className="w-10 h-10 text-slate-700" />, 
@@ -127,14 +115,6 @@ const TOOLS: Tool[] = [
     multiple: true
   },
   { 
-    id: 'INSERT_PDF', 
-    title: 'Chèn PDF vào PDF khác', 
-    icon: <FilePlus2 className="w-10 h-10 text-teal-600" />, 
-    description: 'Chèn một tệp PDF (hoặc các trang tùy chọn) vào vị trí bất kỳ trong tệp PDF khác',
-    accept: '.pdf',
-    multiple: true
-  },
-  { 
     id: 'SPLIT_PDF', 
     title: 'Tách 1 PDF thành nhiều trang', 
     icon: <Scissors className="w-10 h-10 text-slate-700" />, 
@@ -144,11 +124,11 @@ const TOOLS: Tool[] = [
   },
   { 
     id: 'ORGANIZE_PDF', 
-    title: 'Sắp xếp, Xoay & Xóa trang PDF', 
+    title: 'Sắp xếp, Xoay, Xóa, Trích xuất & Chèn PDF', 
     icon: <Layers className="w-10 h-10 text-blue-600" />, 
-    description: 'Sắp xếp lại thứ tự trang, xoay trang và xóa trang PDF trực quan trong một công cụ',
+    description: 'Sắp xếp thứ tự, xoay, xóa, trích xuất trang và chèn trang từ PDF khác trong một công cụ',
     accept: '.pdf',
-    multiple: false
+    multiple: true
   },
   { 
     id: 'ROTATE_IMAGE', 
@@ -409,11 +389,9 @@ export default function App() {
   const [splitModalFile, setSplitModalFile] = useState<File | null>(null);
   const [showRotateImageModal, setShowRotateImageModal] = useState(false);
   const [rotateImageModalFiles, setRotateImageModalFiles] = useState<File[]>([]);
-  const [showInsertPdfModal, setShowInsertPdfModal] = useState(false);
-  const [insertPdfBaseFile, setInsertPdfBaseFile] = useState<File | null>(null);
-  const [insertPdfInsertFile, setInsertPdfInsertFile] = useState<File | null>(null);
   const [showOrganizePdfModal, setShowOrganizePdfModal] = useState(false);
   const [organizePdfFile, setOrganizePdfFile] = useState<File | null>(null);
+  const [organizePdfExtraFiles, setOrganizePdfExtraFiles] = useState<File[]>([]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -522,7 +500,7 @@ export default function App() {
 
     // Determine if we need to show a settings modal before processing
     const needsSettings = ['IMG_TO_PDF', 'PDF_TO_IMG', 'COMPRESS_PDF', 'CONVERT_IMAGE', 'CHANGE_DPI'].includes(action);
-    const multiStepTools = ['MERGE_PDF', 'EXTRACT_PAGES'];
+    const multiStepTools = ['MERGE_PDF'];
     
     if (!toolInput && !overrideValues) {
       if (action === 'SPLIT_PDF') {
@@ -541,6 +519,7 @@ export default function App() {
           return;
         }
         setOrganizePdfFile(pdfFiles[0]);
+        setOrganizePdfExtraFiles(pdfFiles.slice(1));
         setShowOrganizePdfModal(true);
         return;
       } else if (needsSettings) {
@@ -585,7 +564,7 @@ export default function App() {
     setToolInput(null);
 
     // Validate file types for PDF tools
-    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'EXTRACT_PAGES', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'PDF_TO_WORD', 'ORGANIZE_PDF'];
+    const pdfTools: ToolAction[] = ['PDF_TO_IMG', 'COMPRESS_PDF', 'MERGE_PDF', 'SPLIT_PDF', 'PDF_TO_WORD', 'ORGANIZE_PDF'];
     if (pdfTools.includes(action)) {
       const nonPdfFiles = filesArray.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
       if (nonPdfFiles.length > 0) {
@@ -897,34 +876,6 @@ export default function App() {
           break;
         }
 
-        case 'EXTRACT_PAGES': {
-          const pagesInput = currentValue || '';
-          const pageIndices = parsePageInput(pagesInput);
-          const zip = new JSZip();
-          const targetFiles = filesArray.length > 0 ? filesArray : processedFiles;
-          for (const file of targetFiles) {
-            setStatus({ message: `Đang xử lý PDF: ${file.name}...`, type: 'loading' });
-            const pdf = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
-            const newPdf = await PDFDocument.create();
-            const indices = pageIndices.filter(i => i >= 0 && i < pdf.getPageCount());
-            if (indices.length > 0) {
-              const copiedPages = await newPdf.copyPages(pdf, indices);
-              copiedPages.forEach(p => newPdf.addPage(p));
-              zip.file(`${file.name.replace(/\.pdf$/i, '')}_extracted.pdf`, await newPdf.save());
-            }
-          }
-          if (Object.keys(zip.files).length > 1) {
-            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'extracted_pdfs.zip');
-          } else if (Object.keys(zip.files).length === 1) {
-            const key = Object.keys(zip.files)[0];
-            downloadBlob(await zip.file(key)!.async('blob'), key);
-          } else {
-            throw new Error('Không có trang nào được chọn hoặc kết quả trống.');
-          }
-          setStatus({ message: '✅ Đã trích xuất trang thành công!', type: 'success' });
-          break;
-        }
-
         default:
           setStatus({ message: 'Tính năng đang được phát triển', type: 'info' });
       }
@@ -934,26 +885,6 @@ export default function App() {
       setStatus({ message: `❌ ${error.message || 'Có lỗi xảy ra.'}`, type: 'error' });
       setToolInput(null); // Ensure modal closes even on error if it was open
     }
-  };
-
-  const parsePageInput = (input: string) => {
-    const pages: number[] = [];
-    const parts = input.split(',');
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (trimmed.includes('-')) {
-        const [start, end] = trimmed.split('-').map(p => parseInt(p.trim()));
-        if (!isNaN(start) && !isNaN(end)) {
-          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
-            pages.push(i - 1);
-          }
-        }
-      } else {
-        const p = parseInt(trimmed);
-        if (!isNaN(p)) pages.push(p - 1);
-      }
-    }
-    return [...new Set(pages)].sort((a, b) => a - b);
   };
 
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -1147,106 +1078,75 @@ export default function App() {
     }
   };
 
-  const handleExecuteInsertPdf = async ({
-    baseFile,
-    insertFile,
-    insertAfterPage,
-    insertPageRange,
+  const handleExecuteOrganizePdf = async ({
+    sourceFiles,
+    primaryFileName,
+    pages,
+    mode,
   }: {
-    baseFile: File;
-    insertFile: File;
-    insertAfterPage: number;
-    insertPageRange: string;
+    sourceFiles: Record<string, File>;
+    primaryFileName: string;
+    pages: OrganizePdfExecuteItem[];
+    mode: 'save' | 'extract';
   }) => {
-    setStatus({ message: 'Đang chèn các trang PDF...', type: 'loading' });
-    try {
-      const [baseBuf, insertBuf] = await Promise.all([
-        baseFile.arrayBuffer(),
-        insertFile.arrayBuffer(),
-      ]);
-
-      const basePdf = await PDFDocument.load(baseBuf, { ignoreEncryption: true });
-      const insertPdf = await PDFDocument.load(insertBuf, { ignoreEncryption: true });
-
-      const baseTotal = basePdf.getPageCount();
-      const insertTotal = insertPdf.getPageCount();
-
-      const rawInsertIndices = insertPageRange.trim()
-        ? parsePageInput(insertPageRange).filter((idx) => idx >= 0 && idx < insertTotal)
-        : insertPdf.getPageIndices();
-
-      if (rawInsertIndices.length === 0) {
-        throw new Error('Không có trang hợp lệ nào được chọn từ tệp PDF cần chèn.');
-      }
-
-      const clampedAfter = Math.max(0, Math.min(insertAfterPage, baseTotal));
-      const outPdf = await PDFDocument.create();
-
-      if (clampedAfter > 0) {
-        const beforeIndices = Array.from({ length: clampedAfter }, (_, i) => i);
-        const beforePages = await outPdf.copyPages(basePdf, beforeIndices);
-        beforePages.forEach((p) => outPdf.addPage(p));
-      }
-
-      const insertedPages = await outPdf.copyPages(insertPdf, rawInsertIndices);
-      insertedPages.forEach((p) => outPdf.addPage(p));
-
-      if (clampedAfter < baseTotal) {
-        const afterIndices = Array.from(
-          { length: baseTotal - clampedAfter },
-          (_, i) => clampedAfter + i
-        );
-        const afterPages = await outPdf.copyPages(basePdf, afterIndices);
-        afterPages.forEach((p) => outPdf.addPage(p));
-      }
-
-      const outBytes = await outPdf.save();
-      const baseName = baseFile.name.replace(/\.pdf$/i, '');
-      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), `${baseName}_inserted.pdf`);
-
-      setStatus({
-        message: `✅ Đã chèn ${rawInsertIndices.length} trang vào PDF thành công (Tổng ${baseTotal + rawInsertIndices.length} trang)!`,
-        type: 'success',
-      });
-    } catch (err: any) {
-      console.error(err);
-      setStatus({ message: `❌ ${err.message || 'Có lỗi xảy ra khi chèn PDF.'}`, type: 'error' });
-      throw err;
-    }
-  };
-
-  const handleExecuteOrganizePdf = async (
-    file: File,
-    pages: { originalIndex: number; rotation: number }[]
-  ) => {
     if (pages.length === 0) {
-      throw new Error('Cần giữ lại ít nhất 1 trang để lưu tệp PDF.');
-    }
-    setStatus({ message: `Đang xử lý và lưu tệp PDF (${pages.length} trang)...`, type: 'loading' });
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const srcPdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-      const outPdf = await PDFDocument.create();
-
-      const copiedPages = await outPdf.copyPages(
-        srcPdf,
-        pages.map((p) => p.originalIndex)
+      throw new Error(
+        mode === 'extract'
+          ? 'Vui lòng chọn ít nhất 1 trang để trích xuất.'
+          : 'Cần giữ lại ít nhất 1 trang để lưu tệp PDF.'
       );
+    }
+    setStatus({
+      message:
+        mode === 'extract'
+          ? `Đang trích xuất ${pages.length} trang PDF...`
+          : `Đang xử lý và lưu tệp PDF (${pages.length} trang)...`,
+      type: 'loading',
+    });
+    try {
+      const outPdf = await PDFDocument.create();
+      const indicesBySource = new Map<string, number[]>();
+      for (const page of pages) {
+        const list = indicesBySource.get(page.sourceFileId) || [];
+        list.push(page.originalIndex);
+        indicesBySource.set(page.sourceFileId, list);
+      }
 
-      copiedPages.forEach((copiedPage, idx) => {
-        const addedAngle = pages[idx].rotation;
-        if (addedAngle !== 0) {
+      const copiedBySource = new Map<string, any[]>();
+      for (const [sourceFileId, indices] of indicesBySource.entries()) {
+        const srcFile = sourceFiles[sourceFileId];
+        if (!srcFile) {
+          throw new Error('Không tìm thấy tệp PDF nguồn để xuất.');
+        }
+        const buf = await srcFile.arrayBuffer();
+        const srcDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+        const copied = await outPdf.copyPages(srcDoc, indices);
+        copiedBySource.set(sourceFileId, copied);
+      }
+
+      const cursorBySource = new Map<string, number>();
+      for (const page of pages) {
+        const cursor = cursorBySource.get(page.sourceFileId) || 0;
+        const copiedList = copiedBySource.get(page.sourceFileId)!;
+        const copiedPage = copiedList[cursor];
+        cursorBySource.set(page.sourceFileId, cursor + 1);
+
+        if (page.rotation !== 0) {
           const existingAngle = copiedPage.getRotation().angle || 0;
-          copiedPage.setRotation(degrees((existingAngle + addedAngle) % 360));
+          copiedPage.setRotation(degrees((existingAngle + page.rotation) % 360));
         }
         outPdf.addPage(copiedPage);
-      });
+      }
 
       const outBytes = await outPdf.save();
-      const baseName = file.name.replace(/\.pdf$/i, '');
-      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), `${baseName}_edited.pdf`);
+      const baseName = primaryFileName.replace(/\.pdf$/i, '');
+      const suffix = mode === 'extract' ? 'extracted' : 'edited';
+      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), `${baseName}_${suffix}.pdf`);
       setStatus({
-        message: `✅ Đã xử lý tệp PDF thành công (${pages.length} trang)!`,
+        message:
+          mode === 'extract'
+            ? `✅ Đã trích xuất ${pages.length} trang PDF thành công!`
+            : `✅ Đã xử lý tệp PDF thành công (${pages.length} trang)!`,
         type: 'success',
       });
     } catch (err: any) {
@@ -1274,17 +1174,6 @@ export default function App() {
       });
       return;
     }
-    if (action === 'INSERT_PDF') {
-      const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
-      if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
-        setStatus({ message: '❌ Vui lòng chỉ kéo thả tệp định dạng .pdf.', type: 'error' });
-        return;
-      }
-      setInsertPdfBaseFile(droppedPdfs[0] ?? null);
-      setInsertPdfInsertFile(droppedPdfs[1] ?? null);
-      setShowInsertPdfModal(true);
-      return;
-    }
     if (action === 'ORGANIZE_PDF') {
       const droppedPdfs = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.pdf'));
       if (droppedPdfs.length === 0 && e.dataTransfer.files.length > 0) {
@@ -1293,6 +1182,7 @@ export default function App() {
       }
       if (droppedPdfs.length > 0) {
         setOrganizePdfFile(droppedPdfs[0]);
+        setOrganizePdfExtraFiles(droppedPdfs.slice(1));
         setShowOrganizePdfModal(true);
       }
       return;
@@ -1361,7 +1251,7 @@ export default function App() {
           <p className="text-lg text-slate-500 max-w-2xl mx-auto">
             Bộ công cụ thông minh cho văn phòng
           </p>
-          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">V.2.0.4 • Bản cây nhà lá vườn</p>
+          <p className="text-sm text-slate-400 mt-2 font-medium tracking-widest uppercase">V.2.0.5a • Bản cây nhà lá vườn</p>
         </motion.div>
       </header>
 
@@ -1394,15 +1284,12 @@ export default function App() {
                     dpi: globalDpi,
                     type: 'reorder',
                   });
-                } else if (tool.id === 'INSERT_PDF') {
-                  setInsertPdfBaseFile(null);
-                  setInsertPdfInsertFile(null);
-                  setShowInsertPdfModal(true);
                 } else if (tool.id === 'SPLIT_PDF') {
                   setSplitModalFile(null);
                   setShowSplitModal(true);
                 } else if (tool.id === 'ORGANIZE_PDF') {
                   setOrganizePdfFile(null);
+                  setOrganizePdfExtraFiles([]);
                   setShowOrganizePdfModal(true);
                 } else if (tool.id === 'ROTATE_IMAGE') {
                   setRotateImageModalFiles([]);
@@ -2013,7 +1900,7 @@ export default function App() {
                   </div>
                   <div className="bg-slate-50 p-4 rounded-xl text-left">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Phiên bản</div>
-                    <div className="text-slate-700 font-bold">V.2.0.4 - Bản cây nhà lá vườn</div>
+                    <div className="text-slate-700 font-bold">V.2.0.5a - Bản cây nhà lá vườn</div>
                   </div>
                   <a 
                     href="https://fb.com/minhtri.pham.1997" 
@@ -2071,30 +1958,16 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Interactive Insert PDF Modal */}
-      <AnimatePresence>
-        {showInsertPdfModal && (
-          <PdfInsertModal
-            initialBaseFile={insertPdfBaseFile}
-            initialInsertFile={insertPdfInsertFile}
-            onClose={() => {
-              setShowInsertPdfModal(false);
-              setInsertPdfBaseFile(null);
-              setInsertPdfInsertFile(null);
-            }}
-            onExecuteInsert={handleExecuteInsertPdf}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Interactive Organize PDF Modal (Reorder, Rotate, Delete) */}
+      {/* Interactive Organize PDF Modal (Reorder, Rotate, Delete, Extract, Insert) */}
       <AnimatePresence>
         {showOrganizePdfModal && (
           <PdfOrganizeModal
             initialFile={organizePdfFile}
+            initialExtraFiles={organizePdfExtraFiles}
             onClose={() => {
               setShowOrganizePdfModal(false);
               setOrganizePdfFile(null);
+              setOrganizePdfExtraFiles([]);
             }}
             onExecuteOrganize={handleExecuteOrganizePdf}
           />
